@@ -8,8 +8,60 @@
 #
 
 ##
+# WAFv2 IP Sets
+# One resource per entry in settings.ip_sets.
+# Use ref:<name> in ip_set_reference.arn rules to link these resources dynamically.
+##
+resource "aws_wafv2_ip_set" "this" {
+  for_each = { for s in local.ip_sets : s.name => s }
+
+  name               = format("%s-%s", local.waf_name, each.value.name)
+  scope              = local.waf_scope
+  description        = try(each.value.description, null)
+  ip_address_version = each.value.ip_address_version
+  addresses          = try(each.value.addresses, [])
+
+  tags = local.all_tags
+}
+
+##
+# WAFv2 Regex Pattern Sets
+# One resource per entry in settings.regex_pattern_sets.
+# Use ref:<name> in regex_pattern_set_reference.arn rules to link these resources dynamically.
+##
+resource "aws_wafv2_regex_pattern_set" "this" {
+  for_each = { for s in local.regex_pattern_sets : s.name => s }
+
+  name        = format("%s-%s", local.waf_name, each.value.name)
+  scope       = local.waf_scope
+  description = try(each.value.description, null)
+
+  dynamic "regular_expression" {
+    for_each = try(each.value.patterns, [])
+    content {
+      regex_string = regular_expression.value
+    }
+  }
+
+  tags = local.all_tags
+}
+
+##
+# WAFv2 API Keys (mobile SDK token domain integration)
+# One resource per entry in settings.api_keys.
+##
+resource "aws_wafv2_api_key" "this" {
+  for_each = { for k in local.api_keys : k.name => k }
+
+  scope         = local.waf_scope
+  token_domains = each.value.token_domains
+}
+
+##
 # Custom WAFv2 Rule Groups
 # One resource per entry in settings.rule_groups.
+# Rules within each group support ref:<name> in ip_set_reference and
+# regex_pattern_set_reference ARNs to reference module-managed resources.
 ##
 resource "aws_wafv2_rule_group" "this" {
   for_each = { for rg in local.custom_rule_groups : rg.name => rg }
@@ -39,16 +91,21 @@ resource "aws_wafv2_rule_group" "this" {
           for_each = try(rule.value.action, "block") == "count" ? [1] : []
           content {}
         }
+        dynamic "captcha" {
+          for_each = try(rule.value.action, "block") == "captcha" ? [1] : []
+          content {}
+        }
       }
 
       statement {
         ##
         # IP Set Reference Statement
+        # Use arn for a literal ARN, or ref for a module-managed ip set name.
         ##
         dynamic "ip_set_reference_statement" {
           for_each = try(rule.value.ip_set_reference, null) != null ? [rule.value.ip_set_reference] : []
           content {
-            arn = ip_set_reference_statement.value.arn
+            arn = try(ip_set_reference_statement.value.ref, null) != null ? aws_wafv2_ip_set.this[ip_set_reference_statement.value.ref].arn : ip_set_reference_statement.value.arn
           }
         }
 
@@ -188,11 +245,12 @@ resource "aws_wafv2_rule_group" "this" {
 
         ##
         # Regex Pattern Set Reference Statement
+        # Use arn for a literal ARN, or ref for a module-managed regex pattern set name.
         ##
         dynamic "regex_pattern_set_reference_statement" {
           for_each = try(rule.value.regex_pattern_set_reference, null) != null ? [rule.value.regex_pattern_set_reference] : []
           content {
-            arn = regex_pattern_set_reference_statement.value.arn
+            arn = try(regex_pattern_set_reference_statement.value.ref, null) != null ? aws_wafv2_regex_pattern_set.this[regex_pattern_set_reference_statement.value.ref].arn : regex_pattern_set_reference_statement.value.arn
 
             field_to_match {
               dynamic "uri_path" {
@@ -261,8 +319,13 @@ resource "aws_wafv2_rule_group" "this" {
 
 ##
 # WAFv2 Web ACL
-# Rules reference managed rule groups, external rule group ARNs,
-# and custom rule groups created above — no inline statement rules.
+# Rules are evaluated in priority order. All rules reference rule groups — either
+# AWS managed groups, external ARNs (with optional ref: for module-managed groups),
+# or custom groups created by this module.
+#
+# IMPORTANT: lifecycle.ignore_changes = [rule] is set so that rule changes made
+# outside Terraform (e.g. by AWS Firewall Manager or the console) are not reverted
+# on the next plan/apply. Rules are applied on initial creation only.
 ##
 resource "aws_wafv2_web_acl" "this" {
   name        = local.waf_name
@@ -347,7 +410,9 @@ resource "aws_wafv2_web_acl" "this" {
   }
 
   ##
-  # External Rule Group References (pre-existing ARNs)
+  # External and Module-Managed Rule Group References
+  # Use arn for a literal ARN, or ref for a module-managed rule group name
+  # from settings.rule_groups.
   ##
   dynamic "rule" {
     for_each = { for r in local.rule_group_references : r.name => r }
@@ -369,7 +434,7 @@ resource "aws_wafv2_web_acl" "this" {
 
       statement {
         rule_group_reference_statement {
-          arn = rule.value.arn
+          arn = try(rule.value.ref, null) != null ? aws_wafv2_rule_group.this[rule.value.ref].arn : rule.value.arn
 
           dynamic "rule_action_override" {
             for_each = try(rule.value.excluded_rules, [])
@@ -392,7 +457,7 @@ resource "aws_wafv2_web_acl" "this" {
   }
 
   ##
-  # Custom Rule Group References (created by this module)
+  # Custom Rule Groups (created by this module)
   ##
   dynamic "rule" {
     for_each = { for rg in local.custom_rule_groups : rg.name => rg }
@@ -433,6 +498,23 @@ resource "aws_wafv2_web_acl" "this" {
   }
 
   tags = local.all_tags
+
+  lifecycle {
+    ignore_changes = [rule]
+  }
+}
+
+##
+# WAFv2 Web ACL Associations
+# Associates the Web ACL with protected AWS resources:
+# ALB, API Gateway stage, AppSync GraphQL API, Cognito User Pool,
+# App Runner service, or Verified Access instance.
+##
+resource "aws_wafv2_web_acl_association" "this" {
+  for_each = { for a in local.web_acl_associations : a.resource_arn => a }
+
+  resource_arn = each.value.resource_arn
+  web_acl_arn  = aws_wafv2_web_acl.this.arn
 }
 
 ##

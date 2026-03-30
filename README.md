@@ -17,9 +17,11 @@
 
 Terraform module to manage a single AWS WAFv2 Web ACL with any combination of
 AWS Managed Rule Groups, external rule group references, and custom rule groups
-(created in-module). Supports optional centralized logging with field redaction
-and log filtering. Designed for both `REGIONAL` (ALB, API Gateway, AppSync,
-Cognito, App Runner, Verified Access) and `CLOUDFRONT` scopes.
+(created in-module). Supports module-managed IP sets, regex pattern sets, and
+API keys with dynamic `ref:` linking into rules. Includes optional Web ACL
+associations and centralized logging with field redaction and log filtering.
+Designed for both `REGIONAL` (ALB, API Gateway, AppSync, Cognito, App Runner,
+Verified Access) and `CLOUDFRONT` scopes.
 
 
 ---
@@ -56,33 +58,55 @@ production-ready WAFv2 deployment:
 
 | Resource | Purpose |
 |---|---|
+| `aws_wafv2_ip_set` | One per entry in `settings.ip_sets` — module-managed IP allow/block lists |
+| `aws_wafv2_regex_pattern_set` | One per entry in `settings.regex_pattern_sets` — module-managed regex libraries |
+| `aws_wafv2_api_key` | One per entry in `settings.api_keys` — mobile SDK token domain keys |
 | `aws_wafv2_rule_group` | One per entry in `settings.rule_groups` — custom logic lives here, not inline in the ACL |
 | `aws_wafv2_web_acl` | Single ACL whose rules reference only rule groups (managed, external, or custom) |
+| `aws_wafv2_web_acl_association` | One per entry in `settings.associations` — attaches the ACL to ALB, API GW, etc. |
 | `aws_wafv2_web_acl_logging_configuration` | Optional logging to Kinesis Firehose, S3, or CloudWatch Logs |
 
 ### Design principles
 
 * **No inline rule statements in the ACL.** Every rule in the ACL is a
-  `managed_rule_group_statement` or a `rule_group_reference_statement`, which
-  keeps the ACL readable and avoids Terraform plan diffs caused by deeply nested
-  statement blocks.
+  `managed_rule_group_statement` or a `rule_group_reference_statement`, keeping
+  the ACL readable and avoiding Terraform plan diffs from deeply nested blocks.
+* **Rule drift is ignored after creation.** The Web ACL has `lifecycle { ignore_changes = [rule] }`,
+  so rules changed outside Terraform (e.g. by AWS Firewall Manager or the console)
+  are not reverted on subsequent plan/apply runs.
+* **`ref:` linking for dynamic ARN resolution.** Use `ref:<name>` instead of a
+  literal ARN in `ip_set_reference.arn`, `regex_pattern_set_reference.arn`, and
+  `rule_group_references[].arn` to reference resources created within this module.
+  Terraform resolves the ARN at plan time with full dependency tracking.
 * **Single `settings` variable.** All WAF-specific configuration is passed as a
-  structured `any` map, making the module easy to drive from YAML inputs files in
+  structured `any` map, making the module easy to drive from YAML input files in
   a Terragrunt stack.
 * **Name or prefix, not both.** Supply either `name` (explicit) or `name_prefix`
   (concatenated with the computed `system_name`) — the module enforces that at
   least one is set.
 
+### `ref` linking — how it works
+
+Instead of a literal `arn`, set `ref: "<name>"` to reference a resource created
+by this module. Provide `arn` **or** `ref` — not both. The `name` must match the
+`name` field of the target object in `settings`.
+
+| Field | `ref` resolves to |
+|---|---|
+| `ip_set_reference.ref` | `settings.ip_sets[name]` ARN |
+| `regex_pattern_set_reference.ref` | `settings.regex_pattern_sets[name]` ARN |
+| `rule_group_references[].ref` | `settings.rule_groups[name]` ARN |
+
 ### Supported statement types in custom rule groups
 
-| Statement | Key |
-|---|---|
-| IP set reference | `ip_set_reference` |
-| Geo match | `geo_match` |
-| Rate-based | `rate_based` |
-| Byte match | `byte_match` |
-| Size constraint | `size_constraint` |
-| Regex pattern set reference | `regex_pattern_set_reference` |
+| Statement | Key | Supports `ref` |
+|---|---|---|
+| IP set reference | `ip_set_reference` | yes |
+| Geo match | `geo_match` | — |
+| Rate-based | `rate_based` | — |
+| Byte match | `byte_match` | — |
+| Size constraint | `size_constraint` | — |
+| Regex pattern set reference | `regex_pattern_set_reference` | yes |
 
 ### Supported AWS Managed Rule Groups (examples)
 
@@ -213,13 +237,64 @@ inputs = {
       },
     ]
 
-    # ── External Rule Group References (pre-existing ARNs) ─────────────────
+    # ── IP Sets (created by this module, referenceable via ref:) ─────────────
+    ip_sets = [
+      {
+        name               = "blocked-ips"
+        ip_address_version = "IPV4"   # IPV4 | IPV6
+        addresses = [
+          "203.0.113.0/24",
+          "198.51.100.42/32",
+        ]
+        description = "Known bad IPv4 ranges"
+      },
+    ]
+
+    # ── Regex Pattern Sets (created by this module, referenceable via ref:) ─
+    regex_pattern_sets = [
+      {
+        name        = "malicious-paths"
+        description = "Common attack path patterns"
+        patterns = [
+          "^/admin/.*",
+          "^/wp-.*",
+          "^\\.env$",
+        ]
+      },
+    ]
+
+    # ── API Keys (mobile SDK token domain integration) ─────────────────────
+    api_keys = [
+      {
+        name = "mobile-app"
+        token_domains = [
+          "app.example.com",
+          "api.example.com",
+        ]
+      },
+    ]
+
+    # ── Web ACL Associations ───────────────────────────────────────────────
+    associations = [
+      {
+        resource_arn = "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/abcdef01"
+      },
+    ]
+
+    # ── External Rule Group References (arn or ref — not both) ───────────
     rule_group_references = [
+      # Option A: literal ARN of a pre-existing rule group
       {
         name            = "shared-ip-allowlist"
         priority        = 5
         arn             = "arn:aws:wafv2:us-east-1:123456789012:regional/rulegroup/shared-ip-allowlist/abcdef01"
         override_action = "none"
+      },
+      # Option B: ref to a rule group created by this module (settings.rule_groups[name])
+      {
+        name = "ip-controls-via-ref"
+        priority = 65
+        ref  = "ip-controls"
       },
     ]
 
@@ -232,13 +307,13 @@ inputs = {
         description   = "IP reputation and rate limiting"
 
         rules = [
-          # Block a specific IP set
+          # Block using a module-managed IP set (ref resolves to settings.ip_sets[name=blocked-ips])
           {
             name     = "block-bad-ips"
             priority = 1
             action   = "block"
             ip_set_reference = {
-              arn = "arn:aws:wafv2:us-east-1:123456789012:regional/ipset/blocked-ips/abcdef01"
+              ref = "blocked-ips"
             }
           },
           # Rate limit per source IP
@@ -305,13 +380,13 @@ inputs = {
               ]
             }
           },
-          # Block paths matching a regex pattern set
+          # Block paths matching a module-managed regex pattern set (ref resolves to settings.regex_pattern_sets[name=malicious-paths])
           {
             name     = "block-malicious-paths"
             priority = 3
             action   = "block"
             regex_pattern_set_reference = {
-              arn = "arn:aws:wafv2:us-east-1:123456789012:regional/regexpatternset/malicious-paths/abcdef01"
+              ref = "malicious-paths"
               field_to_match = {
                 type = "URI_PATH"
               }
@@ -440,15 +515,81 @@ managed_rules = [
 ]
 ```
 
-### Attaching the ACL to an ALB
+### Attaching the ACL to an ALB (inline association)
 
-The WAFv2 ACL is attached to the ALB (or API Gateway stage, etc.) via a
-separate association resource in the consuming stack:
+Pass the ALB ARN in `settings.associations` and the module creates the
+`aws_wafv2_web_acl_association` resource automatically:
+
+```hcl
+settings = {
+  scope = "REGIONAL"
+  associations = [
+    { resource_arn = "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/abc123" },
+  ]
+  managed_rules = [
+    { name = "AWSManagedRulesCommonRuleSet", priority = 10 },
+  ]
+}
+```
+
+Alternatively, associate from the consuming stack using the module output:
 
 ```hcl
 resource "aws_wafv2_web_acl_association" "alb" {
   resource_arn = aws_lb.this.arn
   web_acl_arn  = module.waf.web_acl_arn
+}
+```
+
+### Using module-managed IP sets and regex pattern sets with `ref:`
+
+Define the sets inside `settings` and reference them by name in rule statements
+using `ref:<name>` — no need to look up ARNs manually:
+
+```hcl
+settings = {
+  scope = "REGIONAL"
+
+  ip_sets = [
+    {
+      name               = "scanners"
+      ip_address_version = "IPV4"
+      addresses          = ["198.51.100.0/24"]
+    },
+  ]
+
+  regex_pattern_sets = [
+    {
+      name     = "bad-paths"
+      patterns = ["^/\\.git/.*", "^/wp-admin/.*"]
+    },
+  ]
+
+  rule_groups = [
+    {
+      name     = "custom-blocks"
+      priority = 50
+      capacity = 100
+      rules = [
+        {
+          name             = "block-scanners"
+          priority         = 1
+          action           = "block"
+          ip_set_reference = { ref = "scanners" }
+        },
+        {
+          name     = "block-bad-paths"
+          priority = 2
+          action   = "block"
+          regex_pattern_set_reference = {
+            ref            = "bad-paths"
+            field_to_match = { type = "URI_PATH" }
+            text_transformations = [{ priority = 0, type = "LOWERCASE" }]
+          }
+        },
+      ]
+    },
+  ]
 }
 ```
 
@@ -493,8 +634,12 @@ Available targets:
 
 | Name | Type |
 |------|------|
+| [aws_wafv2_api_key.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/wafv2_api_key) | resource |
+| [aws_wafv2_ip_set.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/wafv2_ip_set) | resource |
+| [aws_wafv2_regex_pattern_set.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/wafv2_regex_pattern_set) | resource |
 | [aws_wafv2_rule_group.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/wafv2_rule_group) | resource |
 | [aws_wafv2_web_acl.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/wafv2_web_acl) | resource |
+| [aws_wafv2_web_acl_association.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/wafv2_web_acl_association) | resource |
 | [aws_wafv2_web_acl_logging_configuration.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/wafv2_web_acl_logging_configuration) | resource |
 | [aws_region.current](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/region) | data source |
 
@@ -507,16 +652,22 @@ Available targets:
 | <a name="input_name"></a> [name](#input\_name) | Explicit name for the WAF ACL. Required when name\_prefix is not set. | `string` | `null` | no |
 | <a name="input_name_prefix"></a> [name\_prefix](#input\_name\_prefix) | Name prefix prepended to system\_name to form the WAF ACL name (<name\_prefix>-<system\_name>). Required when name is not set. | `string` | `null` | no |
 | <a name="input_org"></a> [org](#input\_org) | Organization details | <pre>object({<br/>    organization_name = string<br/>    organization_unit = string<br/>    environment_type  = string<br/>    environment_name  = string<br/>  })</pre> | n/a | yes |
-| <a name="input_settings"></a> [settings](#input\_settings) | WAF module settings — controls ACL scope/default-action, AWS managed rules, external rule group references, custom rule groups, and logging | `any` | `{}` | no |
+| <a name="input_settings"></a> [settings](#input\_settings) | WAF module settings — controls ACL scope/default-action, IP sets, regex pattern sets, API keys, associations, AWS managed rules, rule group references, custom rule groups, and logging. | `any` | `{}` | no |
 | <a name="input_spoke_def"></a> [spoke\_def](#input\_spoke\_def) | Spoke ID Number, must be a 3 digit number | `string` | `"001"` | no |
 
 ## Outputs
 
 | Name | Description |
 |------|-------------|
+| <a name="output_api_key_values"></a> [api\_key\_values](#output\_api\_key\_values) | Map of API key names to their generated key values (sensitive — used with the WAFv2 mobile SDK) |
+| <a name="output_ip_set_arns"></a> [ip\_set\_arns](#output\_ip\_set\_arns) | Map of IP set names to their ARNs (only sets created by this module) |
+| <a name="output_ip_set_ids"></a> [ip\_set\_ids](#output\_ip\_set\_ids) | Map of IP set names to their IDs |
+| <a name="output_regex_pattern_set_arns"></a> [regex\_pattern\_set\_arns](#output\_regex\_pattern\_set\_arns) | Map of regex pattern set names to their ARNs (only sets created by this module) |
+| <a name="output_regex_pattern_set_ids"></a> [regex\_pattern\_set\_ids](#output\_regex\_pattern\_set\_ids) | Map of regex pattern set names to their IDs |
 | <a name="output_rule_group_arns"></a> [rule\_group\_arns](#output\_rule\_group\_arns) | Map of custom rule group names to their ARNs (only groups created by this module) |
 | <a name="output_rule_group_ids"></a> [rule\_group\_ids](#output\_rule\_group\_ids) | Map of custom rule group names to their IDs |
 | <a name="output_web_acl_arn"></a> [web\_acl\_arn](#output\_web\_acl\_arn) | ARN of the WAFv2 Web ACL |
+| <a name="output_web_acl_association_ids"></a> [web\_acl\_association\_ids](#output\_web\_acl\_association\_ids) | Map of protected resource ARNs to their Web ACL association IDs |
 | <a name="output_web_acl_capacity"></a> [web\_acl\_capacity](#output\_web\_acl\_capacity) | Current WAF capacity units (WCU) consumed by the Web ACL |
 | <a name="output_web_acl_id"></a> [web\_acl\_id](#output\_web\_acl\_id) | ID of the WAFv2 Web ACL |
 | <a name="output_web_acl_name"></a> [web\_acl\_name](#output\_web\_acl\_name) | Name of the WAFv2 Web ACL |

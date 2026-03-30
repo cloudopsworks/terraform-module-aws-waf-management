@@ -20,6 +20,11 @@ locals {
   rule_group_references = try(var.settings.rule_group_references, [])
   custom_rule_groups    = try(var.settings.rule_groups, [])
 
+  ip_sets              = try(var.settings.ip_sets, [])
+  regex_pattern_sets   = try(var.settings.regex_pattern_sets, [])
+  api_keys             = try(var.settings.api_keys, [])
+  web_acl_associations = try(var.settings.associations, [])
+
   logging_enabled      = try(var.settings.logging.enabled, false)
   logging_destinations = try(var.settings.logging.destination_arns, [])
 }
