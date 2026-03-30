@@ -24,18 +24,62 @@ variable "name_prefix" {
 
 # settings:                                  # (Optional) WAF module settings. Default: {}
 #
-# --- Top-level ACL settings ---
+# ── Top-level ACL settings ────────────────────────────────────────────────────
 #   description: "My WAF ACL"               # (Optional) Human-readable description of the ACL.
 #   scope: "REGIONAL"                        # (Required) Scope: REGIONAL | CLOUDFRONT.
 #   default_action: "allow"                  # (Optional) Default action when no rule matches: allow | block. Default: allow.
 #
-# --- Top-level visibility config ---
+# ── Top-level visibility config ───────────────────────────────────────────────
 #   visibility_config:
 #     cloudwatch_metrics_enabled: true       # (Optional) Publish CloudWatch metrics. Default: true.
 #     metric_name: "my-waf-acl"             # (Optional) CloudWatch metric name. Default: ACL name.
 #     sampled_requests_enabled: true         # (Optional) Store a sample of matched requests. Default: true.
 #
-# --- AWS Managed Rule Groups ---
+# ── IP Sets (created by this module) ──────────────────────────────────────────
+#   ip_sets:
+#     - name: "blocked-ips"                  # (Required) Module-internal key; also used as name suffix: "<acl-name>-<name>".
+#       ip_address_version: "IPV4"           # (Required) IP version: IPV4 | IPV6.
+#       addresses:                           # (Optional) List of CIDR blocks. Default: [].
+#         - "203.0.113.0/24"                 #   IPv4 CIDR (when ip_address_version = IPV4).
+#         - "2001:db8::/32"                  #   IPv6 CIDR (when ip_address_version = IPV6).
+#       description: "Blocked IP ranges"     # (Optional) Human-readable description.
+#
+#   Reference in rules (choose arn or ref — not both):
+#     ip_set_reference:
+#       arn: "arn:aws:wafv2:..."             #   (Option A) Literal ARN of any existing ip set.
+#     ip_set_reference:
+#       ref: "blocked-ips"                   #   (Option B) Name of a module-managed ip set (settings.ip_sets[name]).
+#
+# ── Regex Pattern Sets (created by this module) ───────────────────────────────
+#   regex_pattern_sets:
+#     - name: "bad-paths"                    # (Required) Module-internal key; name suffix: "<acl-name>-<name>".
+#       patterns:                            # (Required) List of regex strings.
+#         - "^/admin/.*"                     #   (Required) PCRE-compatible regex.
+#         - "^/wp-.*"
+#       description: "Malicious path patterns" # (Optional) Human-readable description.
+#
+#   Reference in rules (choose arn or ref — not both):
+#     regex_pattern_set_reference:
+#       arn: "arn:aws:wafv2:..."             #   (Option A) Literal ARN of any existing regex pattern set.
+#     regex_pattern_set_reference:
+#       ref: "bad-paths"                     #   (Option B) Name of a module-managed set (settings.regex_pattern_sets[name]).
+#
+# ── API Keys (mobile SDK token domain integration) ────────────────────────────
+#   api_keys:
+#     - name: "mobile-app"                   # (Required) Module-internal label (used as for_each key).
+#       token_domains:                       # (Required) Fully qualified domain names for token validation.
+#         - "app.example.com"
+#         - "api.example.com"
+#
+# ── Web ACL Associations ──────────────────────────────────────────────────────
+#   associations:
+#     - resource_arn: "arn:aws:elasticloadbalancing:..." # (Required) ARN of the protected resource.
+#                                            #   Supported: ALB, API Gateway stage, AppSync GraphQL API,
+#                                            #   Cognito User Pool, App Runner service, Verified Access instance.
+#                                            #   Note: CLOUDFRONT-scoped ACLs cannot use associations here —
+#                                            #   attach via the CloudFront distribution instead.
+#
+# ── AWS Managed Rule Groups ───────────────────────────────────────────────────
 #   managed_rules:
 #     - name: "AWSManagedRulesCommonRuleSet" # (Required) AWS managed rule group name.
 #       priority: 10                         # (Required) Evaluation priority — unique across all rules in the ACL, lower = first.
@@ -54,11 +98,13 @@ variable "name_prefix" {
 #         metric_name: "rule-name"           #   (Optional) Default: rule name.
 #         sampled_requests_enabled: true     #   (Optional) Default: true.
 #
-# --- External Rule Group References ---
+# ── External Rule Group References ────────────────────────────────────────────
 #   rule_group_references:
 #     - name: "shared-ip-allowlist"         # (Required) Label used as the rule name in the ACL.
 #       priority: 5                          # (Required) Evaluation priority — must be unique across all ACL rules.
-#       arn: "arn:aws:wafv2:..."             # (Required) Full ARN of a pre-existing WAFv2 rule group.
+#       arn: "arn:aws:wafv2:..."             # (Option A) Literal ARN of a pre-existing WAFv2 rule group.
+#       ref: "ip-controls"                   # (Option B) Name of a module-managed rule group (settings.rule_groups[name]).
+#                                            #   Provide arn OR ref — not both.
 #       override_action: "none"              # (Optional) none | count. Default: none.
 #       excluded_rules:                      # (Optional) Rule names within the group to override to count.
 #         - "RuleName"
@@ -67,7 +113,7 @@ variable "name_prefix" {
 #         metric_name: "shared-ip-allowlist"
 #         sampled_requests_enabled: true
 #
-# --- Custom Rule Groups (created by this module) ---
+# ── Custom Rule Groups (created by this module) ───────────────────────────────
 #   rule_groups:
 #     - name: "ip-controls"                 # (Required) Name suffix appended to the ACL name: "<acl-name>-<name>".
 #       priority: 60                         # (Required) Evaluation priority in the ACL.
@@ -81,16 +127,18 @@ variable "name_prefix" {
 #       rules:                               # (Optional) Rules inside this rule group. Exactly one statement per rule.
 #         - name: "block-bad-ips"           # (Required) Rule name — unique within the group.
 #           priority: 1                      # (Required) Rule priority within the group.
-#           action: "block"                  # (Required) Rule action: allow | block | count.
+#           action: "block"                  # (Required) Rule action: allow | block | count | captcha.
 #           visibility_config:               # (Optional) Per-rule visibility config.
 #             cloudwatch_metrics_enabled: true
 #             metric_name: "block-bad-ips"
 #             sampled_requests_enabled: true
 #
-#           # ── Statement types — exactly one must be set per rule ──────────
+#           # ── Statement types — exactly one must be set per rule ────────────
 #
-#           ip_set_reference:                # (Optional) Matches requests from IPs in an existing IP set.
-#             arn: "arn:aws:wafv2:..."       #   (Required) ARN of the aws_wafv2_ip_set resource.
+#           ip_set_reference:                # (Optional) Matches requests from IPs in an IP set.
+#             arn: "arn:aws:wafv2:..."       #   (Option A) Literal ARN of any existing ip set.
+#             ref: "blocked-ips"             #   (Option B) Name of a module-managed ip set (settings.ip_sets[name]).
+#                                            #   Provide arn OR ref — not both.
 #
 #           geo_match:                       # (Optional) Matches requests originating from specific countries.
 #             country_codes: ["US", "CA"]    #   (Required) ISO 3166-1 alpha-2 country codes.
@@ -123,15 +171,17 @@ variable "name_prefix" {
 #               - priority: 0
 #                 type: "NONE"
 #
-#           regex_pattern_set_reference:   # (Optional) Matches a field against patterns in an existing regex set.
-#             arn: "arn:aws:wafv2:..."     #   (Required) ARN of the aws_wafv2_regex_pattern_set resource.
+#           regex_pattern_set_reference:   # (Optional) Matches a field against patterns in a regex pattern set.
+#             arn: "arn:aws:wafv2:..."     #   (Option A) Literal ARN of any existing regex pattern set.
+#             ref: "bad-paths"             #   (Option B) Name of a module-managed set (settings.regex_pattern_sets[name]).
+#                                          #   Provide arn OR ref — not both.
 #             field_to_match:             #   (Required) Same field types as byte_match.
 #               type: "URI_PATH"
 #             text_transformations:
 #               - priority: 0
 #                 type: "LOWERCASE"
 #
-# --- Logging ---
+# ── Logging ───────────────────────────────────────────────────────────────────
 #   logging:
 #     enabled: true                          # (Optional) Enable WAF logging. Default: false.
 #     destination_arns:                      # (Required when enabled) One or more log destination ARNs.
@@ -150,7 +200,7 @@ variable "name_prefix" {
 #             - label_name_condition: "awswaf:managed:aws:core-rule-set:NoUserAgent_Header"
 #                                            #       (Optional) Match on a label name (exact or prefix pattern).
 variable "settings" {
-  description = "WAF module settings — controls ACL scope/default-action, AWS managed rules, external rule group references, custom rule groups, and logging"
+  description = "WAF module settings — controls ACL scope/default-action, IP sets, regex pattern sets, API keys, associations, AWS managed rules, rule group references, custom rule groups, and logging."
   type        = any
   default     = {}
 }
