@@ -1,12 +1,12 @@
-name: Terraform Transit Gateway Module
+name: Terraform AWS WAFv2 Management Module
 #logo: logo/logo.jpg
 badges:
   - name: Latest Release
-    image: https://img.shields.io/github/release/<owner/repo>.svg?style=for-the-badge
-    url: https://github.com/<owner/repo>/releases/latest
+    image: https://img.shields.io/github/release/cloudopsworks/terraform-module-aws-waf-management.svg?style=for-the-badge
+    url: https://github.com/cloudopsworks/terraform-module-aws-waf-management/releases/latest
   - name: Last Updated
-    image: https://img.shields.io/github/last-commit/<owner/repo>.svg?style=for-the-badge
-    url: https://github.com/<owner/repo>/commits
+    image: https://img.shields.io/github/last-commit/cloudopsworks/terraform-module-aws-waf-management.svg?style=for-the-badge
+    url: https://github.com/cloudopsworks/terraform-module-aws-waf-management/commits
 
 license: "APACHE2"
 
@@ -15,23 +15,409 @@ copyrights:
     url: "https://cloudopsworks.co"
     year: "2026"
 
-github_repo: <owner/repo>
+github_repo: cloudopsworks/terraform-module-aws-waf-management
 
 description: |-
-  <description>
+  Terraform module to manage a single AWS WAFv2 Web ACL with any combination of
+  AWS Managed Rule Groups, external rule group references, and custom rule groups
+  (created in-module). Supports optional centralized logging with field redaction
+  and log filtering. Designed for both `REGIONAL` (ALB, API Gateway, AppSync,
+  Cognito, App Runner, Verified Access) and `CLOUDFRONT` scopes.
 
-# Introduction to the project
 introduction: |-
-#  This is an introduction.
+  ## Overview
 
-# How to use this project
+  This module provisions and wires together all the resources required for a
+  production-ready WAFv2 deployment:
+
+  | Resource | Purpose |
+  |---|---|
+  | `aws_wafv2_rule_group` | One per entry in `settings.rule_groups` — custom logic lives here, not inline in the ACL |
+  | `aws_wafv2_web_acl` | Single ACL whose rules reference only rule groups (managed, external, or custom) |
+  | `aws_wafv2_web_acl_logging_configuration` | Optional logging to Kinesis Firehose, S3, or CloudWatch Logs |
+
+  ### Design principles
+
+  * **No inline rule statements in the ACL.** Every rule in the ACL is a
+    `managed_rule_group_statement` or a `rule_group_reference_statement`, which
+    keeps the ACL readable and avoids Terraform plan diffs caused by deeply nested
+    statement blocks.
+  * **Single `settings` variable.** All WAF-specific configuration is passed as a
+    structured `any` map, making the module easy to drive from YAML inputs files in
+    a Terragrunt stack.
+  * **Name or prefix, not both.** Supply either `name` (explicit) or `name_prefix`
+    (concatenated with the computed `system_name`) — the module enforces that at
+    least one is set.
+
+  ### Supported statement types in custom rule groups
+
+  | Statement | Key |
+  |---|---|
+  | IP set reference | `ip_set_reference` |
+  | Geo match | `geo_match` |
+  | Rate-based | `rate_based` |
+  | Byte match | `byte_match` |
+  | Size constraint | `size_constraint` |
+  | Regex pattern set reference | `regex_pattern_set_reference` |
+
+  ### Supported AWS Managed Rule Groups (examples)
+
+  | Vendor | Name |
+  |---|---|
+  | AWS | `AWSManagedRulesCommonRuleSet` |
+  | AWS | `AWSManagedRulesKnownBadInputsRuleSet` |
+  | AWS | `AWSManagedRulesSQLiRuleSet` |
+  | AWS | `AWSManagedRulesLinuxRuleSet` |
+  | AWS | `AWSManagedRulesAmazonIpReputationList` |
+  | AWS | `AWSManagedRulesBotControlRuleSet` *(requires `managed_rule_group_configs`)* |
+  | AWS | `AWSManagedRulesATPRuleSet` *(requires `managed_rule_group_configs`)* |
+
 usage: |-
+  ## Usage (Terragrunt)
 
-# Example usage
+  ### Minimal — managed rules only, explicit name
+
+  ```hcl
+  locals {
+    local_vars  = yamldecode(file("./inputs.yaml"))
+    global_vars = yamldecode(file(find_in_parent_folders("global-inputs.yaml")))
+    global_tags = jsondecode(file(find_in_parent_folders("global-tags.json")))
+    local_tags  = jsondecode(file("./local-tags.json"))
+    tags        = merge(local.global_tags, local.local_tags)
+  }
+
+  include "root" {
+    path = find_in_parent_folders("root.hcl")
+  }
+
+  terraform {
+    source = "git::https://github.com/cloudopsworks/terraform-module-aws-waf-management.git//?ref=v1.0.0"
+  }
+
+  inputs = {
+    org        = local.global_vars.org
+    spoke_def  = local.local_vars.spoke_def
+    extra_tags = local.tags
+
+    name = try(local.local_vars.name, null)
+
+    settings = {
+      scope          = "REGIONAL"
+      default_action = "allow"
+
+      managed_rules = [
+        {
+          name     = "AWSManagedRulesCommonRuleSet"
+          priority = 10
+        },
+        {
+          name     = "AWSManagedRulesKnownBadInputsRuleSet"
+          priority = 20
+        },
+        {
+          name            = "AWSManagedRulesAmazonIpReputationList"
+          priority        = 30
+          override_action = "count"  # monitor only
+        },
+      ]
+    }
+  }
+  ```
+
+  ### Full — all features enabled
+
+  ```hcl
+  inputs = {
+    org        = local.global_vars.org
+    spoke_def  = local.local_vars.spoke_def
+    extra_tags = local.tags
+
+    # Either name OR name_prefix must be set — not both.
+    # name        = "acme-prod-waf"
+    name_prefix = "acme"   # resolves to "acme-<system_name>"
+
+    settings = {
+      scope          = "REGIONAL"   # REGIONAL | CLOUDFRONT
+      default_action = "allow"      # allow | block
+      description    = "Production WAF ACL — ACME platform"
+
+      visibility_config = {
+        cloudwatch_metrics_enabled = true
+        sampled_requests_enabled   = true
+        # metric_name defaults to the ACL name
+      }
+
+      # ── AWS Managed Rule Groups ────────────────────────────────────────────
+      managed_rules = [
+        {
+          name            = "AWSManagedRulesCommonRuleSet"
+          priority        = 10
+          override_action = "none"   # enforce; use "count" to monitor
+          excluded_rules  = [
+            "SizeRestrictions_BODY",   # overridden to count
+          ]
+        },
+        {
+          name     = "AWSManagedRulesSQLiRuleSet"
+          priority = 20
+        },
+        {
+          name     = "AWSManagedRulesLinuxRuleSet"
+          priority = 30
+        },
+        {
+          name     = "AWSManagedRulesAmazonIpReputationList"
+          priority = 40
+        },
+        # Bot Control requires managed_rule_group_configs
+        {
+          name     = "AWSManagedRulesBotControlRuleSet"
+          priority = 50
+          managed_rule_group_configs = [
+            {
+              bot_control = {
+                inspection_level = "COMMON"   # COMMON | TARGETED
+              }
+            }
+          ]
+        },
+      ]
+
+      # ── External Rule Group References (pre-existing ARNs) ─────────────────
+      rule_group_references = [
+        {
+          name            = "shared-ip-allowlist"
+          priority        = 5
+          arn             = "arn:aws:wafv2:us-east-1:123456789012:regional/rulegroup/shared-ip-allowlist/abcdef01"
+          override_action = "none"
+        },
+      ]
+
+      # ── Custom Rule Groups (created by this module) ────────────────────────
+      rule_groups = [
+        {
+          name          = "ip-controls"
+          priority      = 60
+          capacity      = 50
+          description   = "IP reputation and rate limiting"
+
+          rules = [
+            # Block a specific IP set
+            {
+              name     = "block-bad-ips"
+              priority = 1
+              action   = "block"
+              ip_set_reference = {
+                arn = "arn:aws:wafv2:us-east-1:123456789012:regional/ipset/blocked-ips/abcdef01"
+              }
+            },
+            # Rate limit per source IP
+            {
+              name     = "rate-limit-per-ip"
+              priority = 2
+              action   = "block"
+              rate_based = {
+                limit                 = 2000    # requests per evaluation_window_sec
+                aggregate_key_type    = "IP"    # IP | FORWARDED_IP
+                evaluation_window_sec = 300
+              }
+            },
+            # Geo-block specific countries
+            {
+              name     = "geo-block"
+              priority = 3
+              action   = "block"
+              geo_match = {
+                country_codes = ["CN", "RU", "KP"]
+              }
+            },
+          ]
+        },
+
+        {
+          name        = "http-hygiene"
+          priority    = 70
+          capacity    = 150
+          description = "HTTP header and body hygiene checks"
+
+          rules = [
+            # Block requests with a specific User-Agent string
+            {
+              name     = "block-bad-user-agent"
+              priority = 1
+              action   = "block"
+              byte_match = {
+                search_string         = "BadBot/1.0"
+                positional_constraint = "CONTAINS"   # EXACTLY | STARTS_WITH | ENDS_WITH | CONTAINS | CONTAINS_WORD
+                field_to_match = {
+                  type = "SINGLE_HEADER"
+                  name = "user-agent"
+                }
+                text_transformations = [
+                  { priority = 0, type = "LOWERCASE" }
+                ]
+              }
+            },
+            # Block oversized request bodies
+            {
+              name     = "block-large-body"
+              priority = 2
+              action   = "block"
+              size_constraint = {
+                comparison_operator = "GT"   # EQ | NE | LE | LT | GE | GT
+                size                = 8192
+                field_to_match = {
+                  type              = "BODY"
+                  oversize_handling = "CONTINUE"   # NO_MATCH | MATCH | CONTINUE
+                }
+                text_transformations = [
+                  { priority = 0, type = "NONE" }
+                ]
+              }
+            },
+            # Block paths matching a regex pattern set
+            {
+              name     = "block-malicious-paths"
+              priority = 3
+              action   = "block"
+              regex_pattern_set_reference = {
+                arn = "arn:aws:wafv2:us-east-1:123456789012:regional/regexpatternset/malicious-paths/abcdef01"
+                field_to_match = {
+                  type = "URI_PATH"
+                }
+                text_transformations = [
+                  { priority = 0, type = "LOWERCASE" }
+                ]
+              }
+            },
+          ]
+        },
+      ]
+
+      # ── Logging ───────────────────────────────────────────────────────────
+      logging = {
+        enabled = true
+        destination_arns = [
+          "arn:aws:firehose:us-east-1:123456789012:deliverystream/aws-waf-logs-acme-prod",
+        ]
+        # Redact sensitive fields from stored logs
+        redacted_fields = [
+          { type = "QUERY_STRING" },
+          { type = "SINGLE_HEADER", name = "authorization" },
+        ]
+        # Only store blocked and counted requests (drop allowed traffic logs)
+        filter = {
+          default_behavior = "DROP"
+          filters = [
+            {
+              behavior    = "KEEP"
+              requirement = "MEETS_ANY"
+              conditions = [
+                { action_condition = "BLOCK" },
+                { action_condition = "COUNT" },
+              ]
+            },
+          ]
+        }
+      }
+    }
+  }
+  ```
+
 examples: |-
+  ## Common examples
 
-# How to get started quickly
+  ### CloudFront scope (global WAF for a CDN distribution)
+
+  When protecting a CloudFront distribution the module must be deployed in
+  `us-east-1` (the only region that accepts `CLOUDFRONT`-scoped resources) and
+  the resulting `web_acl_arn` output is passed to the CloudFront distribution.
+
+  ```hcl
+  inputs = {
+    org  = local.global_vars.org
+    name = "acme-cloudfront-waf"
+
+    settings = {
+      scope          = "CLOUDFRONT"
+      default_action = "allow"
+
+      managed_rules = [
+        { name = "AWSManagedRulesCommonRuleSet",         priority = 10 },
+        { name = "AWSManagedRulesKnownBadInputsRuleSet", priority = 20 },
+      ]
+    }
+  }
+  ```
+
+  ### Count mode — non-blocking audit before enforcement
+
+  Use `override_action = "count"` on all rule groups to observe what would be
+  blocked without actually blocking traffic. Flip to `"none"` when confident.
+
+  ```hcl
+  managed_rules = [
+    {
+      name            = "AWSManagedRulesCommonRuleSet"
+      priority        = 10
+      override_action = "count"
+    },
+    {
+      name            = "AWSManagedRulesSQLiRuleSet"
+      priority        = 20
+      override_action = "count"
+    },
+  ]
+  ```
+
+  ### Attaching the ACL to an ALB
+
+  The WAFv2 ACL is attached to the ALB (or API Gateway stage, etc.) via a
+  separate association resource in the consuming stack:
+
+  ```hcl
+  resource "aws_wafv2_web_acl_association" "alb" {
+    resource_arn = aws_lb.this.arn
+    web_acl_arn  = module.waf.web_acl_arn
+  }
+  ```
+
 quickstart: |-
+  ## Quick start
+
+  1. **Initialize** a new Terragrunt layer pointing at this module:
+
+     ```hcl
+     terraform {
+       source = "git::https://github.com/cloudopsworks/terraform-module-aws-waf-management.git//?ref=v1.0.0"
+     }
+     ```
+
+  2. **Provide** the required inputs — either `name` or `name_prefix` plus
+     `settings.scope`:
+
+     ```hcl
+     inputs = {
+       org         = local.global_vars.org
+       name_prefix = "myapp"
+       settings = {
+         scope = "REGIONAL"
+         managed_rules = [
+           { name = "AWSManagedRulesCommonRuleSet", priority = 10 },
+         ]
+       }
+     }
+     ```
+
+  3. **Plan and apply**:
+
+     ```shell
+     terragrunt plan
+     terragrunt apply
+     ```
+
+  4. **Associate** the resulting `web_acl_arn` output with your ALB, API Gateway
+     stage, or CloudFront distribution.
 
 include:
   - "docs/targets.md"
