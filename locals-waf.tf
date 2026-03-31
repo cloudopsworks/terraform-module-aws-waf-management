@@ -19,6 +19,7 @@ locals {
   managed_rules         = try(var.settings.managed_rules, [])
   rule_group_references = try(var.settings.rule_group_references, [])
   custom_rule_groups    = try(var.settings.rule_groups, [])
+  custom_rules          = try(var.settings.custom_rules, [])
 
   ip_sets              = try(var.settings.ip_sets, [])
   regex_pattern_sets   = try(var.settings.regex_pattern_sets, [])

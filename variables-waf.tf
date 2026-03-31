@@ -266,6 +266,146 @@ variable "name_prefix" {
 #               - priority: 0
 #                 type: "LOWERCASE"
 #
+# ── Custom Inline Rules ───────────────────────────────────────────────────────
+#   custom_rules:
+#     - name: "block-bad-ips"                  # (Required) Rule name — unique across all ACL rules.
+#       priority: 70                            # (Required) Evaluation priority — must be unique across all ACL rules.
+#       action: "block"                         # (Required) Rule terminal action: allow | block | count | captcha | challenge.
+#       captcha_config:                         # (Optional) Per-rule CAPTCHA immunity time (overrides web ACL level).
+#         immunity_time: 300                    #   (Required) Seconds (60–259200).
+#       challenge_config:                       # (Optional) Per-rule challenge immunity time (overrides web ACL level).
+#         immunity_time: 300                    #   (Required) Seconds (300–259200).
+#       rule_labels:                            # (Optional) Labels added to matching requests.
+#         - "custom:inline-match"              #   (Required) Label name pattern: namespace1:namespace2:labelName.
+#       visibility_config:                      # (Optional) Per-rule visibility config.
+#         cloudwatch_metrics_enabled: true      #   (Optional) Default: true.
+#         metric_name: "block-bad-ips"          #   (Optional) Default: rule name.
+#         sampled_requests_enabled: true        #   (Optional) Default: true.
+#
+#       # ── Statement types — exactly one must be set per rule ──────────────────
+#
+#       ip_set_reference:                       # (Optional) Matches requests from IPs in an IP set.
+#         arn: "arn:aws:wafv2:..."             #   (Option A) Literal ARN of any existing IP set.
+#         ref: "blocked-ips"                   #   (Option B) Name of a module-managed IP set (settings.ip_sets[name]).
+#                                              #   Provide arn OR ref — not both.
+#         ip_set_forwarded_ip_config:          #   (Optional) Match the forwarded IP header instead of the source IP.
+#           fallback_behavior: "NO_MATCH"      #     (Required) NO_MATCH | MATCH — used when the header is absent.
+#           header_name: "X-Forwarded-For"    #     (Required) HTTP header containing the forwarded IP address.
+#           position: "FIRST"                 #     (Required) Position to use in the header: FIRST | LAST | ANY.
+#
+#       geo_match:                             # (Optional) Matches requests originating from specific countries.
+#         country_codes: ["US", "CA"]         #   (Required) ISO 3166-1 alpha-2 country codes.
+#         forwarded_ip_config:                #   (Optional) Match against a forwarded IP header.
+#           fallback_behavior: "NO_MATCH"     #     (Required) NO_MATCH | MATCH.
+#           header_name: "X-Forwarded-For"   #     (Required) HTTP header containing the forwarded IP address.
+#
+#       label_match:                          # (Optional) Matches requests that carry a specified label.
+#         scope: "LABEL"                      #   (Required) LABEL | NAMESPACE.
+#         key: "awswaf:managed:aws:core-rule-set:NoUserAgent_Header"
+#                                             #   (Required) Full label name or namespace prefix to match.
+#
+#       rate_based:                           # (Optional) Triggers when a source exceeds a request rate threshold.
+#         limit: 2000                         #   (Required) Max requests per evaluation window (100–2000000000).
+#         aggregate_key_type: "IP"            #   (Optional) IP | FORWARDED_IP | CONSTANT | CUSTOM_KEYS. Default: IP.
+#         evaluation_window_sec: 300          #   (Optional) Rolling window in seconds (60|120|300|600). Default: 300.
+#         forwarded_ip_config:               #   (Optional) Required when aggregate_key_type = FORWARDED_IP.
+#           fallback_behavior: "NO_MATCH"    #     (Required) NO_MATCH | MATCH.
+#           header_name: "X-Forwarded-For"  #     (Required) HTTP header containing the forwarded IP address.
+#
+#       byte_match:                          # (Optional) Matches a literal string at a specific field position.
+#         search_string: "badbot"           #   (Required) String to search for.
+#         positional_constraint: "CONTAINS" #   (Required) EXACTLY | STARTS_WITH | ENDS_WITH | CONTAINS | CONTAINS_WORD.
+#         field_to_match:                   #   (Required) Request component to inspect.
+#           type: "URI_PATH"               #     (Required) URI_PATH | QUERY_STRING | METHOD | BODY |
+#                                          #       ALL_QUERY_ARGUMENTS | SINGLE_HEADER | SINGLE_QUERY_ARGUMENT |
+#                                          #       COOKIES | HEADERS | JSON_BODY.
+#           name: null                     #     (Optional) Header or argument name — required for SINGLE_* types.
+#           oversize_handling: "NO_MATCH"  #     (Optional) For BODY / COOKIES / HEADERS / JSON_BODY: NO_MATCH | MATCH | CONTINUE.
+#           match_type: null               #     (Optional) For COOKIES / HEADERS: ALL | INCLUDED_COOKIES | EXCLUDED_COOKIES
+#                                          #       / ALL | INCLUDED_HEADERS | EXCLUDED_HEADERS.
+#           match_strings: []              #     (Optional) For COOKIES / HEADERS: list of cookie or header names.
+#           match_scope: null              #     (Optional) For JSON_BODY: ALL | KEY | VALUE.
+#           invalid_fallback_behavior: null #    (Optional) For JSON_BODY: MATCH | NO_MATCH | EVALUATE_AS_STRING.
+#         text_transformations:            #   (Optional) Ordered transformations applied before matching.
+#           - priority: 0                 #     (Required) Transformation order.
+#             type: "LOWERCASE"           #     (Required) NONE | LOWERCASE | URL_DECODE | HTML_ENTITY_DECODE |
+#                                         #       COMPRESS_WHITE_SPACE | CMD_LINE.
+#
+#       size_constraint:                  # (Optional) Matches requests where a field's size meets a condition.
+#         comparison_operator: "GT"       #   (Required) EQ | NE | LE | LT | GE | GT.
+#         size: 8192                      #   (Required) Threshold in bytes.
+#         field_to_match:                #   (Required) Same field types as byte_match (see above).
+#           type: "BODY"
+#           oversize_handling: "CONTINUE"
+#         text_transformations:
+#           - priority: 0
+#             type: "NONE"
+#
+#       sqli_match:                      # (Optional) Detects SQL injection attacks in a request field.
+#         sensitivity_level: "LOW"       #   (Optional) LOW | HIGH. Default: LOW.
+#         field_to_match:               #   (Required) Same field types as byte_match (see above).
+#           type: "QUERY_STRING"
+#         text_transformations:
+#           - priority: 0
+#             type: "URL_DECODE"
+#
+#       xss_match:                      # (Optional) Detects cross-site scripting (XSS) attacks in a request field.
+#         field_to_match:              #   (Required) Same field types as byte_match (see above).
+#           type: "BODY"
+#           oversize_handling: "NO_MATCH"
+#         text_transformations:
+#           - priority: 0
+#             type: "HTML_ENTITY_DECODE"
+#
+#       regex_match:                    # (Optional) Matches a field against a single regex pattern.
+#         regex_string: "^/admin/.*"   #   (Required) Regular expression pattern.
+#         field_to_match:             #   (Required) Same field types as byte_match (see above).
+#           type: "URI_PATH"
+#         text_transformations:
+#           - priority: 0
+#             type: "LOWERCASE"
+#
+#       regex_pattern_set_reference:   # (Optional) Matches a field against a managed set of regex patterns.
+#         arn: "arn:aws:wafv2:..."     #   (Option A) Literal ARN of any existing regex pattern set.
+#         ref: "bad-paths"             #   (Option B) Name of a module-managed set (settings.regex_pattern_sets[name]).
+#                                      #   Provide arn OR ref — not both.
+#         field_to_match:             #   (Required) Same field types as byte_match (see above).
+#           type: "URI_PATH"
+#         text_transformations:
+#           - priority: 0
+#             type: "LOWERCASE"
+#
+#       # ── Compound statements — wrap one or more leaf statements ──────────────
+#       # Note: Terraform does not support recursive nesting. Compound statements
+#       # support one level of inner compound nesting (not/and/or within not/and/or).
+#       # Inner leaf statements support: URI_PATH | QUERY_STRING | METHOD | BODY |
+#       #   ALL_QUERY_ARGUMENTS | SINGLE_HEADER | SINGLE_QUERY_ARGUMENT field types.
+#
+#       not_statement:                  # (Optional) Negates the inner statement — matches when inner does NOT match.
+#         ip_set_reference: { ... }    #   (Optional) Any supported leaf statement (same schema as top-level).
+#         geo_match: { ... }           #   (Optional) Same schema as top-level.
+#         label_match: { ... }         #   (Optional) Same schema as top-level.
+#         rate_based: { ... }          #   (Optional) Same schema as top-level.
+#         byte_match: { ... }          #   (Optional) Same schema; field_to_match supports 7 core types only.
+#         size_constraint: { ... }     #   (Optional) Same schema; field_to_match supports 7 core types only.
+#         sqli_match: { ... }          #   (Optional) Same schema; field_to_match supports 7 core types only.
+#         xss_match: { ... }           #   (Optional) Same schema; field_to_match supports 7 core types only.
+#         regex_match: { ... }         #   (Optional) Same schema; field_to_match supports 7 core types only.
+#         regex_pattern_set_reference: { ... }  # (Optional) Same schema; field_to_match supports 7 core types only.
+#
+#       and_statement:                  # (Optional) Matches when ALL inner statements match.
+#         statements:                  #   (Required) List of inner statements — at least 2 required by WAF.
+#           - ip_set_reference: { ... }
+#           - byte_match: { ... }      #   Each entry follows the same schema as top-level leaf statements.
+#           - not_statement: { ... }   #   Inner not/and/or also supported (one additional nesting level).
+#           - and_statement: { ... }
+#           - or_statement: { ... }
+#
+#       or_statement:                   # (Optional) Matches when ANY inner statement matches.
+#         statements:                  #   (Required) List of inner statements — same schema as and_statement.
+#           - geo_match: { ... }
+#           - label_match: { ... }
+#
 # ── Logging ───────────────────────────────────────────────────────────────────
 #   logging:
 #     enabled: true                          # (Optional) Enable WAF logging. Default: false.
