@@ -743,7 +743,7 @@ resource "aws_wafv2_web_acl_rule" "rule_group_references" {
 
   visibility_config {
     cloudwatch_metrics_enabled = try(each.value.visibility_config.cloudwatch_metrics_enabled, true)
-    metric_name                = try(each.value.visibility_config.metric_name, format("%s-%s", try(each.value.vendor_name, "AWS"), each.value.name))
+    metric_name                = try(each.value.visibility_config.metric_name, each.value.name)
     sampled_requests_enabled   = try(each.value.visibility_config.sampled_requests_enabled, true)
   }
 }
