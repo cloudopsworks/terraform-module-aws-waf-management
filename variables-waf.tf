@@ -41,17 +41,15 @@ variable "name_prefix" {
 # ── Association config (request body size limits per resource type) ────────────
 #   association_config:                      # (Optional) Override default 16 KB request body inspection limit.
 #     request_body:                          #   (Optional) Per-resource-type size limit overrides.
-#       - api_gateway:                       #     (Optional) API Gateway REST API.
-#           default_size_inspection_limit: "KB_16"  # (Required) KB_8 | KB_16 | KB_32 | KB_48 | KB_64.
-#       - application_load_balancer:         #     (Optional) Application Load Balancer.
+#       - api_gateway:                       #     (Optional) API Gateway REST API (CLOUDFRONT scope).
+#           default_size_inspection_limit: "KB_16"  # (Required) KB_16 | KB_32 | KB_48 | KB_64.
+#       - app_runner_service:                #     (Optional) AWS App Runner service (REGIONAL scope).
 #           default_size_inspection_limit: "KB_16"
-#       - appsync:                           #     (Optional) AWS AppSync GraphQL API.
+#       - cloudfront:                        #     (Optional) CloudFront distribution (REGIONAL scope).
 #           default_size_inspection_limit: "KB_16"
-#       - app_runner_service:                #     (Optional) AWS App Runner service.
+#       - cognito_user_pool:                 #     (Optional) Amazon Cognito user pool (REGIONAL scope).
 #           default_size_inspection_limit: "KB_16"
-#       - cognito_user_pool:                 #     (Optional) Amazon Cognito user pool.
-#           default_size_inspection_limit: "KB_16"
-#       - verified_access_instance:          #     (Optional) AWS Verified Access instance.
+#       - verified_access_instance:          #     (Optional) AWS Verified Access instance (REGIONAL scope).
 #           default_size_inspection_limit: "KB_16"
 #
 # ── Custom response bodies ─────────────────────────────────────────────────────

@@ -376,16 +376,10 @@ resource "aws_wafv2_web_acl" "this" {
               default_size_inspection_limit = app_runner_service.value.default_size_inspection_limit
             }
           }
-          dynamic "application_load_balancer" {
-            for_each = try(request_body.value.application_load_balancer, null) != null ? [request_body.value.application_load_balancer] : []
+          dynamic "cloudfront" {
+            for_each = try(request_body.value.cloudfront, null) != null ? [request_body.value.cloudfront] : []
             content {
-              default_size_inspection_limit = application_load_balancer.value.default_size_inspection_limit
-            }
-          }
-          dynamic "appsync" {
-            for_each = try(request_body.value.appsync, null) != null ? [request_body.value.appsync] : []
-            content {
-              default_size_inspection_limit = appsync.value.default_size_inspection_limit
+              default_size_inspection_limit = cloudfront.value.default_size_inspection_limit
             }
           }
           dynamic "cognito_user_pool" {
