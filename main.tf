@@ -13,15 +13,13 @@
 # Use ref:<name> in ip_set_reference.arn rules to link these resources dynamically.
 ##
 resource "aws_wafv2_ip_set" "this" {
-  for_each = { for s in local.ip_sets : s.name => s }
-
-  name               = format("%s-%s", local.waf_name, each.value.name)
+  for_each           = { for s in local.ip_sets : s.name => s }
+  name               = try(each.value.name, "") != "" ? each.value.name : format("%s-%s", each.value.name_prefix, local.waf_name)
   scope              = local.waf_scope
   description        = try(each.value.description, null)
   ip_address_version = each.value.ip_address_version
   addresses          = try(each.value.addresses, [])
-
-  tags = local.all_tags
+  tags               = local.all_tags
 }
 
 ##
@@ -30,9 +28,8 @@ resource "aws_wafv2_ip_set" "this" {
 # Use ref:<name> in regex_pattern_set_reference.arn rules to link these resources dynamically.
 ##
 resource "aws_wafv2_regex_pattern_set" "this" {
-  for_each = { for s in local.regex_pattern_sets : s.name => s }
-
-  name        = format("%s-%s", local.waf_name, each.value.name)
+  for_each    = { for s in local.regex_pattern_sets : s.name => s }
+  name        = try(each.value.name, "") != "" ? each.value.name : format("%s-%s", each.value.name_prefix, local.waf_name)
   scope       = local.waf_scope
   description = try(each.value.description, null)
 
@@ -51,8 +48,7 @@ resource "aws_wafv2_regex_pattern_set" "this" {
 # One resource per entry in settings.api_keys.
 ##
 resource "aws_wafv2_api_key" "this" {
-  for_each = { for k in local.api_keys : k.name => k }
-
+  for_each      = { for k in local.api_keys : k.name => k }
   scope         = local.waf_scope
   token_domains = each.value.token_domains
 }
