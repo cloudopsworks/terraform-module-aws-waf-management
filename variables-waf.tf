@@ -269,9 +269,17 @@ variable "name_prefix" {
 # ── Logging ───────────────────────────────────────────────────────────────────
 #   logging:
 #     enabled: true                          # (Optional) Enable WAF logging. Default: false.
-#     destination_arns:                      # (Required when enabled) One or more log destination ARNs.
-#       - "arn:aws:firehose:..."             #   Kinesis Data Firehose stream name must start with "aws-waf-logs-".
-#                                            #   S3 bucket and CloudWatch Logs log group ARNs also accepted.
+#                                            #   A CloudWatch Logs log group named "aws-waf-logs-<acl-name>" is
+#                                            #   created automatically and added as the first log destination.
+#     retention_in_days: 90                  # (Optional) CloudWatch log group retention in days. Default: 90.
+#                                            #   Valid values: 1 | 3 | 5 | 7 | 14 | 30 | 60 | 90 | 120 | 150 |
+#                                            #   180 | 365 | 400 | 545 | 731 | 1096 | 1827 | 2192 | 2557 |
+#                                            #   2922 | 3288 | 3653 | 0 (never expire).
+#     kms_key_id: null                       # (Optional) KMS key ARN for encrypting the CloudWatch log group.
+#     destination_arns:                      # (Optional) Additional log destination ARNs beyond the auto-created
+#                                            #   CloudWatch log group. Supported destinations:
+#       - "arn:aws:firehose:..."             #   Kinesis Data Firehose stream (name must start with "aws-waf-logs-").
+#                                            #   S3 bucket ARNs also accepted.
 #     redacted_fields:                       # (Optional) Fields to omit from stored log records.
 #       - type: "URI_PATH"                   #   (Required) URI_PATH | QUERY_STRING | METHOD | SINGLE_HEADER.
 #         name: null                         #   (Optional) Header name — required only for SINGLE_HEADER type.

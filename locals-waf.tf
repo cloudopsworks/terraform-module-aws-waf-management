@@ -25,6 +25,10 @@ locals {
   api_keys             = try(var.settings.api_keys, [])
   web_acl_associations = try(var.settings.associations, [])
 
-  logging_enabled      = try(var.settings.logging.enabled, false)
-  logging_destinations = try(var.settings.logging.destination_arns, [])
+  logging_enabled        = try(var.settings.logging.enabled, false)
+  waf_log_retention_days = try(var.settings.logging.retention_in_days, 90)
+  logging_destinations = concat(
+    local.logging_enabled ? [aws_cloudwatch_log_group.waf_logging[0].arn] : [],
+    try(var.settings.logging.destination_arns, [])
+  )
 }
