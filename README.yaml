@@ -19,10 +19,13 @@ github_repo: cloudopsworks/terraform-module-aws-waf-management
 
 description: |-
   Terraform module to manage a single AWS WAFv2 Web ACL with any combination of
-  AWS Managed Rule Groups, external rule group references, and custom rule groups
-  (created in-module). Supports module-managed IP sets, regex pattern sets, and
-  API keys with dynamic `ref:` linking into rules. Includes optional Web ACL
-  associations and centralized logging with field redaction and log filtering.
+  AWS Managed Rule Groups, external rule group references, custom rule groups
+  (created in-module), and custom inline rules supporting all WAFv2 statement
+  types (byte match, size constraint, SQLi, XSS, regex, IP set, geo match, label
+  match, rate-based, and compound not/and/or). Supports module-managed IP sets,
+  regex pattern sets, and API keys with dynamic `ref:` linking into rules.
+  Includes optional Web ACL associations, automatic CloudWatch Logs group
+  creation, and centralized logging with field redaction and log filtering.
   Designed for both `REGIONAL` (ALB, API Gateway, AppSync, Cognito, App Runner,
   Verified Access) and `CLOUDFRONT` scopes.
 
@@ -37,22 +40,25 @@ introduction: |-
   | `aws_wafv2_ip_set` | One per entry in `settings.ip_sets` — module-managed IP allow/block lists |
   | `aws_wafv2_regex_pattern_set` | One per entry in `settings.regex_pattern_sets` — module-managed regex libraries |
   | `aws_wafv2_api_key` | One per entry in `settings.api_keys` — mobile SDK token domain keys |
-  | `aws_wafv2_rule_group` | One per entry in `settings.rule_groups` — custom logic lives here, not inline in the ACL |
-  | `aws_wafv2_web_acl` | Single ACL whose rules reference only rule groups (managed, external, or custom) |
+  | `aws_wafv2_rule_group` | One per entry in `settings.rule_groups` — custom rule groups created and managed by this module |
+  | `aws_wafv2_web_acl` | Single ACL; rules are attached as standalone `aws_wafv2_web_acl_rule` resources (not inline blocks) |
+  | `aws_wafv2_web_acl_rule` | One per managed rule, rule group reference, custom rule group reference, or custom inline rule |
   | `aws_wafv2_web_acl_association` | One per entry in `settings.associations` — attaches the ACL to ALB, API GW, etc. |
+  | `aws_cloudwatch_log_group` | Auto-created when `settings.logging.enabled = true`; named `aws-waf-logs-<acl-name>` |
   | `aws_wafv2_web_acl_logging_configuration` | Optional logging to Kinesis Firehose, S3, or CloudWatch Logs |
 
   ### Design principles
 
-  * **No inline rule statements in the ACL.** Every rule in the ACL is a
-    `managed_rule_group_statement` or a `rule_group_reference_statement`, keeping
-    the ACL readable and avoiding Terraform plan diffs from deeply nested blocks.
+  * **Rules are standalone resources, not inline ACL blocks.** Every rule is
+    an `aws_wafv2_web_acl_rule` resource attached to the ACL by ARN. The
+    `aws_wafv2_web_acl` resource itself contains no inline rule blocks, keeping
+    ACL plans clean and diff-free as rules are added or changed.
   * **Rule drift is ignored after creation.** The Web ACL has `lifecycle { ignore_changes = [rule] }`,
     so rules changed outside Terraform (e.g. by AWS Firewall Manager or the console)
     are not reverted on subsequent plan/apply runs.
-  * **`ref:` linking for dynamic ARN resolution.** Use `ref:<name>` instead of a
-    literal ARN in `ip_set_reference.arn`, `regex_pattern_set_reference.arn`, and
-    `rule_group_references[].arn` to reference resources created within this module.
+  * **`ref:` linking for dynamic ARN resolution.** Use `ref: "<name>"` instead of a
+    literal ARN in `ip_set_reference`, `regex_pattern_set_reference`, and
+    `rule_group_references[]` to reference resources created within this module.
     Terraform resolves the ARN at plan time with full dependency tracking.
   * **Single `settings` variable.** All WAF-specific configuration is passed as a
     structured `any` map, making the module easy to drive from YAML input files in
@@ -60,6 +66,9 @@ introduction: |-
   * **Name or prefix, not both.** Supply either `name` (explicit) or `name_prefix`
     (concatenated with the computed `system_name`) — the module enforces that at
     least one is set.
+  * **CloudWatch log group is auto-created.** Set `settings.logging.enabled = true`
+    and the module creates a `aws-waf-logs-<acl-name>` log group, wires its ARN into
+    the logging configuration, and manages retention and KMS encryption.
 
   ### `ref` linking — how it works
 
@@ -67,13 +76,15 @@ introduction: |-
   by this module. Provide `arn` **or** `ref` — not both. The `name` must match the
   `name` field of the target object in `settings`.
 
-  | Field | `ref` resolves to |
-  |---|---|
-  | `ip_set_reference.ref` | `settings.ip_sets[name]` ARN |
-  | `regex_pattern_set_reference.ref` | `settings.regex_pattern_sets[name]` ARN |
-  | `rule_group_references[].ref` | `settings.rule_groups[name]` ARN |
+  | Field | Where | `ref` resolves to |
+  |---|---|---|
+  | `ip_set_reference.ref` | `rule_groups[].rules[]` and `custom_rules[]` | `settings.ip_sets[name]` ARN |
+  | `regex_pattern_set_reference.ref` | `rule_groups[].rules[]` and `custom_rules[]` | `settings.regex_pattern_sets[name]` ARN |
+  | `rule_group_references[].ref` | `rule_group_references[]` | `settings.rule_groups[name]` ARN |
 
-  ### Supported statement types in custom rule groups
+  ### Supported statement types
+
+  **Custom rule groups** (`settings.rule_groups[].rules[]`) support these leaf statements:
 
   | Statement | Key | Supports `ref` |
   |---|---|---|
@@ -83,6 +94,25 @@ introduction: |-
   | Byte match | `byte_match` | — |
   | Size constraint | `size_constraint` | — |
   | Regex pattern set reference | `regex_pattern_set_reference` | yes |
+
+  **Custom inline rules** (`settings.custom_rules[]`) support all of the above plus:
+
+  | Statement | Key | Notes |
+  |---|---|---|
+  | Label match | `label_match` | Match by label key or namespace |
+  | SQL injection match | `sqli_match` | Configurable `sensitivity_level` |
+  | XSS match | `xss_match` | — |
+  | Regex match | `regex_match` | Single inline pattern string |
+  | Regex pattern set reference | `regex_pattern_set_reference` | yes (`ref:`) |
+  | Not (compound) | `not_statement` | Wraps one leaf statement |
+  | And (compound) | `and_statement` | Wraps two or more statements |
+  | Or (compound) | `or_statement` | Wraps two or more statements |
+
+  Compound statements support one level of inner nesting (e.g., `and_statement` containing
+  a `not_statement`). Custom inline rules also support the extended `field_to_match` types
+  `COOKIES`, `HEADERS`, and `JSON_BODY` (with match pattern and oversize handling) in addition
+  to the seven core types (`URI_PATH`, `QUERY_STRING`, `METHOD`, `BODY`, `ALL_QUERY_ARGUMENTS`,
+  `SINGLE_HEADER`, `SINGLE_QUERY_ARGUMENT`).
 
   ### Supported AWS Managed Rule Groups (examples)
 
@@ -177,8 +207,9 @@ usage: |-
           name            = "AWSManagedRulesCommonRuleSet"
           priority        = 10
           override_action = "none"   # enforce; use "count" to monitor
-          excluded_rules  = [
-            "SizeRestrictions_BODY",   # overridden to count
+          rule_action_overrides = [
+            # Override individual rules instead of the whole group
+            { name = "SizeRestrictions_BODY", action = "count" },
           ]
         },
         {
@@ -200,7 +231,8 @@ usage: |-
           managed_rule_group_configs = [
             {
               bot_control = {
-                inspection_level = "COMMON"   # COMMON | TARGETED
+                inspection_level       = "COMMON"   # COMMON | TARGETED
+                enable_machine_learning = true
               }
             }
           ]
@@ -369,9 +401,114 @@ usage: |-
         },
       ]
 
+      # ── Custom Inline Rules ────────────────────────────────────────────────
+      # Inline rules are attached directly to the Web ACL as standalone resources.
+      # Every WAFv2 statement type is supported. Use action (not override_action).
+      custom_rules = [
+        # Block requests from known bad IPs (ref to module-managed ip set)
+        {
+          name     = "block-bad-ips"
+          priority = 75
+          action   = "block"
+          ip_set_reference = {
+            ref = "blocked-ips"
+          }
+          visibility_config = {
+            cloudwatch_metrics_enabled = true
+            metric_name                = "AWS-block-bad-ips"
+            sampled_requests_enabled   = true
+          }
+        },
+        # Rate-limit per source IP with label tagging
+        {
+          name     = "rate-limit-api"
+          priority = 80
+          action   = "block"
+          rate_based = {
+            limit                 = 1000
+            aggregate_key_type    = "IP"
+            evaluation_window_sec = 300
+          }
+          visibility_config = {
+            cloudwatch_metrics_enabled = true
+            metric_name                = "AWS-rate-limit-api"
+            sampled_requests_enabled   = true
+          }
+        },
+        # SQLi detection on query string
+        {
+          name     = "detect-sqli"
+          priority = 85
+          action   = "block"
+          sqli_match = {
+            sensitivity_level = "HIGH"
+            field_to_match = {
+              type = "QUERY_STRING"
+            }
+            text_transformations = [
+              { priority = 0, type = "URL_DECODE" },
+              { priority = 1, type = "HTML_ENTITY_DECODE" },
+            ]
+          }
+          visibility_config = {
+            cloudwatch_metrics_enabled = true
+            metric_name                = "AWS-detect-sqli"
+            sampled_requests_enabled   = true
+          }
+        },
+        # Block requests that carry a specific label (set by a managed rule group)
+        {
+          name     = "block-labeled-bots"
+          priority = 90
+          action   = "block"
+          label_match = {
+            scope = "LABEL"
+            key   = "awswaf:managed:aws:bot-control:bot:category:scraping"
+          }
+          visibility_config = {
+            cloudwatch_metrics_enabled = true
+            metric_name                = "AWS-block-labeled-bots"
+            sampled_requests_enabled   = true
+          }
+        },
+        # Compound: block requests that are NOT from allowed countries AND contain a bad path
+        {
+          name     = "compound-geo-path-block"
+          priority = 95
+          action   = "block"
+          and_statement = {
+            statements = [
+              {
+                not_statement = {
+                  geo_match = {
+                    country_codes = ["US", "CA", "GB"]
+                  }
+                }
+              },
+              {
+                regex_pattern_set_reference = {
+                  ref = "malicious-paths"
+                  field_to_match = { type = "URI_PATH" }
+                  text_transformations = [{ priority = 0, type = "LOWERCASE" }]
+                }
+              },
+            ]
+          }
+          visibility_config = {
+            cloudwatch_metrics_enabled = true
+            metric_name                = "AWS-compound-geo-path-block"
+            sampled_requests_enabled   = true
+          }
+        },
+      ]
+
       # ── Logging ───────────────────────────────────────────────────────────
+      # Setting enabled = true creates a CloudWatch log group automatically:
+      #   aws-waf-logs-<acl-name>  (retention: retention_in_days, optional KMS)
       logging = {
-        enabled = true
+        enabled           = true
+        retention_in_days = 90      # 0 = never expire; see valid values in variables-waf.tf
+        # kms_key_id = "arn:aws:kms:..."   # optional — encrypts the log group
         destination_arns = [
           "arn:aws:firehose:us-east-1:123456789012:deliverystream/aws-waf-logs-acme-prod",
         ]
@@ -468,6 +605,72 @@ examples: |-
   resource "aws_wafv2_web_acl_association" "alb" {
     resource_arn = aws_lb.this.arn
     web_acl_arn  = module.waf.web_acl_arn
+  }
+  ```
+
+  ### Custom inline rules — block with any WAFv2 statement
+
+  `settings.custom_rules` creates standalone `aws_wafv2_web_acl_rule` resources
+  attached directly to the ACL. Use `action` (not `override_action`) — these are
+  terminal rules, not rule group references.
+
+  ```hcl
+  settings = {
+    scope = "REGIONAL"
+
+    custom_rules = [
+      # XSS detection on request body
+      {
+        name     = "detect-xss-body"
+        priority = 80
+        action   = "block"
+        xss_match = {
+          field_to_match = {
+            type              = "BODY"
+            oversize_handling = "NO_MATCH"
+          }
+          text_transformations = [
+            { priority = 0, type = "HTML_ENTITY_DECODE" }
+          ]
+        }
+        visibility_config = {
+          cloudwatch_metrics_enabled = true
+          metric_name                = "AWS-detect-xss-body"
+          sampled_requests_enabled   = true
+        }
+      },
+      # Compound: rate-limit OR geo-block (either condition triggers)
+      {
+        name     = "rate-or-geo-block"
+        priority = 85
+        action   = "block"
+        or_statement = {
+          statements = [
+            {
+              rate_based = {
+                limit                 = 500
+                aggregate_key_type    = "IP"
+                evaluation_window_sec = 60
+              }
+            },
+            {
+              geo_match = {
+                country_codes = ["KP", "IR"]
+              }
+            },
+          ]
+        }
+        visibility_config = {
+          cloudwatch_metrics_enabled = true
+          metric_name                = "AWS-rate-or-geo-block"
+          sampled_requests_enabled   = true
+        }
+      },
+    ]
+
+    managed_rules = [
+      { name = "AWSManagedRulesCommonRuleSet", priority = 10 },
+    ]
   }
   ```
 
