@@ -28,6 +28,37 @@ variable "name_prefix" {
 #   description: "My WAF ACL"               # (Optional) Human-readable description of the ACL.
 #   scope: "REGIONAL"                        # (Required) Scope: REGIONAL | CLOUDFRONT.
 #   default_action: "allow"                  # (Optional) Default action when no rule matches: allow | block. Default: allow.
+#   token_domains:                           # (Optional) Domain names that AWS WAF should accept tokens from.
+#     - "example.com"                        #   Used with CAPTCHA and challenge tokens for cross-domain protection.
+#
+# ── CAPTCHA and Challenge config (web ACL level) ───────────────────────────────
+#   captcha_config:                          # (Optional) Web ACL-level CAPTCHA token immunity time.
+#     immunity_time: 300                     #   (Required) Seconds CAPTCHA token remains valid (60–259200). Default: 300.
+#
+#   challenge_config:                        # (Optional) Web ACL-level challenge token immunity time.
+#     immunity_time: 300                     #   (Required) Seconds challenge token remains valid (300–259200). Default: 300.
+#
+# ── Association config (request body size limits per resource type) ────────────
+#   association_config:                      # (Optional) Override default 16 KB request body inspection limit.
+#     request_body:                          #   (Optional) Per-resource-type size limit overrides.
+#       - api_gateway:                       #     (Optional) API Gateway REST API.
+#           default_size_inspection_limit: "KB_16"  # (Required) KB_8 | KB_16 | KB_32 | KB_48 | KB_64.
+#       - application_load_balancer:         #     (Optional) Application Load Balancer.
+#           default_size_inspection_limit: "KB_16"
+#       - appsync:                           #     (Optional) AWS AppSync GraphQL API.
+#           default_size_inspection_limit: "KB_16"
+#       - app_runner_service:                #     (Optional) AWS App Runner service.
+#           default_size_inspection_limit: "KB_16"
+#       - cognito_user_pool:                 #     (Optional) Amazon Cognito user pool.
+#           default_size_inspection_limit: "KB_16"
+#       - verified_access_instance:          #     (Optional) AWS Verified Access instance.
+#           default_size_inspection_limit: "KB_16"
+#
+# ── Custom response bodies ─────────────────────────────────────────────────────
+#   custom_response_bodies:                  # (Optional) Named custom response bodies for use in block actions.
+#     - key: "custom-403"                    #   (Required) Unique key referenced in block action custom_response.
+#       content: "<html>Blocked</html>"      #   (Required) Response body content.
+#       content_type: "TEXT_HTML"            #   (Required) TEXT_PLAIN | TEXT_HTML | APPLICATION_JSON.
 #
 # ── Top-level visibility config ───────────────────────────────────────────────
 #   visibility_config:
@@ -86,13 +117,56 @@ variable "name_prefix" {
 #       vendor_name: "AWS"                   # (Optional) Vendor name. Default: AWS.
 #       override_action: "none"              # (Optional) Override action: none (enforce) | count (monitor). Default: none.
 #       version: null                        # (Optional) Managed rule group version. Default: latest.
-#       excluded_rules:                      # (Optional) Rule names to override to count action.
-#         - "SizeRestrictions_BODY"          #   (Optional) Rule name.
-#       managed_rule_group_configs:          # (Optional) Special config required for BotControl and ATP rule groups.
-#         - bot_control:                     # (Optional) AWS BotControl config.
+#       rule_action_overrides:               # (Optional) Override actions for individual rules within the managed group.
+#         - name: "SizeRestrictions_BODY"    #   (Required) Rule name to override.
+#           action: "count"                  #   (Required) allow | block | count | captcha | challenge. Default: count.
+#       managed_rule_group_configs:          # (Optional) Special config required for BotControl, ATP, and ACFP rule groups.
+#         - bot_control:                     # (Optional) AWS BotControl config (AWSManagedRulesAWSBotControlRuleSet).
 #             inspection_level: "COMMON"     #   (Required) Inspection level: COMMON | TARGETED.
-#         - atp:                             # (Optional) Account Takeover Protection config.
+#             enable_machine_learning: true  #   (Optional) Enable machine learning for targeted inspection. Default: true.
+#         - atp:                             # (Optional) Account Takeover Protection (AWSManagedRulesATPRuleSet).
 #             login_path: "/login"           #   (Required) Login endpoint path evaluated for credential theft.
+#             request_inspection:            #   (Optional) Inspect login request credentials.
+#               payload_type: "JSON"         #     (Required) JSON | FORM_ENCODED.
+#               username_field: "/username"  #     (Required) Field identifier for the username.
+#               password_field: "/password"  #     (Required) Field identifier for the password.
+#             response_inspection:           #   (Optional) Inspect login responses to detect failures/successes.
+#               status_code:                 #     (Optional) Inspect HTTP response status code.
+#                 success_codes: [200]        #       (Required) HTTP codes indicating login success.
+#                 failure_codes: [401, 403]   #       (Required) HTTP codes indicating login failure.
+#               header:                      #     (Optional) Inspect a response header value.
+#                 name: "x-auth-result"      #       (Required) Header name.
+#                 success_values: ["success"] #      (Required) Values indicating login success.
+#                 failure_values: ["failed"]  #      (Required) Values indicating login failure.
+#               body_contains:               #     (Optional) Inspect response body for strings.
+#                 success_strings: ["Login successful"] # (Required) Strings indicating success.
+#                 failure_strings: ["Invalid credentials"] # (Required) Strings indicating failure.
+#               json:                        #     (Optional) Inspect a JSON field in the response body.
+#                 identifier: "/result"      #       (Required) JSON Pointer to the field.
+#                 success_values: ["success"] #      (Required) Values indicating login success.
+#                 failure_values: ["failed"]  #      (Required) Values indicating login failure.
+#         - acfp:                            # (Optional) Account Creation Fraud Prevention (AWSManagedRulesACFPRuleSet).
+#             creation_path: "/signup"       #   (Required) Account creation endpoint path.
+#             registration_page_path: "/register" # (Required) Registration page path.
+#             request_inspection:            #   (Optional) Inspect account creation request fields.
+#               payload_type: "JSON"         #     (Required) JSON | FORM_ENCODED.
+#               username_field:              #     (Optional) Username field identifier.
+#                 identifier: "/username"
+#               password_field:              #     (Optional) Password field identifier.
+#                 identifier: "/password"
+#               email_field:                 #     (Optional) Email field identifier.
+#                 identifier: "/email"
+#               address_fields:              #     (Optional) Address field identifiers.
+#                 - identifiers: ["/address1"]
+#               phone_number_fields:         #     (Optional) Phone number field identifiers.
+#                 - identifiers: ["/phone"]
+#             response_inspection:           #   (Optional) Same structure as ATP response_inspection above.
+#       captcha_config:                      # (Optional) Per-rule CAPTCHA immunity time (overrides web ACL level).
+#         immunity_time: 300                 #   (Required) Seconds (60–259200).
+#       challenge_config:                    # (Optional) Per-rule challenge immunity time (overrides web ACL level).
+#         immunity_time: 300                 #   (Required) Seconds (300–259200).
+#       rule_labels:                         # (Optional) Labels added to matching requests (up to 5).
+#         - "custom:managed-rule-match"      #   (Required) Label name pattern: namespace1:namespace2:labelName.
 #       visibility_config:                   # (Optional) Per-rule visibility config (inherits ACL defaults).
 #         cloudwatch_metrics_enabled: true   #   (Optional) Default: true.
 #         metric_name: "rule-name"           #   (Optional) Default: rule name.
@@ -106,8 +180,15 @@ variable "name_prefix" {
 #       ref: "ip-controls"                   # (Option B) Name of a module-managed rule group (settings.rule_groups[name]).
 #                                            #   Provide arn OR ref — not both.
 #       override_action: "none"              # (Optional) none | count. Default: none.
-#       excluded_rules:                      # (Optional) Rule names within the group to override to count.
-#         - "RuleName"
+#       rule_action_overrides:               # (Optional) Override actions for individual rules within the group.
+#         - name: "RuleName"                 #   (Required) Rule name within the group to override.
+#           action: "count"                  #   (Required) allow | block | count | captcha | challenge. Default: count.
+#       captcha_config:                      # (Optional) Per-rule CAPTCHA immunity time (overrides web ACL level).
+#         immunity_time: 300                 #   (Required) Seconds (60–259200).
+#       challenge_config:                    # (Optional) Per-rule challenge immunity time (overrides web ACL level).
+#         immunity_time: 300                 #   (Required) Seconds (300–259200).
+#       rule_labels:                         # (Optional) Labels added to matching requests (up to 5).
+#         - "custom:ref-rule-match"          #   (Required) Label name pattern: namespace1:namespace2:labelName.
 #       visibility_config:                   # (Optional) Per-rule visibility config.
 #         cloudwatch_metrics_enabled: true
 #         metric_name: "shared-ip-allowlist"
@@ -120,6 +201,12 @@ variable "name_prefix" {
 #       capacity: 100                        # (Required) WAF Capacity Units (WCU) reserved for the group (10–5000).
 #       description: "IP controls"           # (Optional) Human-readable description of the rule group.
 #       override_action: "none"              # (Optional) none | count for the ACL reference. Default: none.
+#       captcha_config:                      # (Optional) Per-rule CAPTCHA immunity time (overrides web ACL level).
+#         immunity_time: 300                 #   (Required) Seconds (60–259200).
+#       challenge_config:                    # (Optional) Per-rule challenge immunity time (overrides web ACL level).
+#         immunity_time: 300                 #   (Required) Seconds (300–259200).
+#       rule_labels:                         # (Optional) Labels added to matching requests (up to 5).
+#         - "custom:rule-group-match"        #   (Required) Label name pattern: namespace1:namespace2:labelName.
 #       visibility_config:                   # (Optional) Rule group-level visibility config.
 #         cloudwatch_metrics_enabled: true
 #         metric_name: "ip-controls"

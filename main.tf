@@ -319,18 +319,15 @@ resource "aws_wafv2_rule_group" "this" {
 
 ##
 # WAFv2 Web ACL
-# Rules are evaluated in priority order. All rules reference rule groups — either
-# AWS managed groups, external ARNs (with optional ref: for module-managed groups),
-# or custom groups created by this module.
-#
-# IMPORTANT: lifecycle.ignore_changes = [rule] is set so that rule changes made
-# outside Terraform (e.g. by AWS Firewall Manager or the console) are not reverted
-# on the next plan/apply. Rules are applied on initial creation only.
+# Rules are managed as separate aws_wafv2_web_acl_rule resources below.
+# lifecycle.ignore_changes = [rule] ensures that rules added outside Terraform
+# (e.g. by AWS Firewall Manager or the console) are not reverted on plan/apply.
 ##
 resource "aws_wafv2_web_acl" "this" {
-  name        = local.waf_name
-  scope       = local.waf_scope
-  description = try(var.settings.description, format("WAF ACL managed by Terraform for %s", local.system_name))
+  name          = local.waf_name
+  scope         = local.waf_scope
+  description   = try(var.settings.description, format("WAF ACL managed by Terraform for %s", local.system_name))
+  token_domains = try(var.settings.token_domains, null)
 
   default_action {
     dynamic "allow" {
@@ -343,151 +340,77 @@ resource "aws_wafv2_web_acl" "this" {
     }
   }
 
-  ##
-  # AWS Managed Rule Groups
-  ##
-  dynamic "rule" {
-    for_each = { for r in local.managed_rules : r.name => r }
-
+  dynamic "captcha_config" {
+    for_each = try(var.settings.captcha_config, null) != null ? [var.settings.captcha_config] : []
     content {
-      name     = rule.value.name
-      priority = rule.value.priority
-
-      override_action {
-        dynamic "none" {
-          for_each = try(rule.value.override_action, "none") == "none" ? [1] : []
-          content {}
-        }
-        dynamic "count" {
-          for_each = try(rule.value.override_action, "none") == "count" ? [1] : []
-          content {}
-        }
-      }
-
-      statement {
-        managed_rule_group_statement {
-          name        = rule.value.name
-          vendor_name = try(rule.value.vendor_name, "AWS")
-          version     = try(rule.value.version, null)
-
-          dynamic "rule_action_override" {
-            for_each = try(rule.value.excluded_rules, [])
-            content {
-              name = rule_action_override.value
-              action_to_use {
-                count {}
-              }
-            }
-          }
-
-          dynamic "managed_rule_group_configs" {
-            for_each = try(rule.value.managed_rule_group_configs, [])
-            content {
-              dynamic "aws_managed_rules_bot_control_rule_set" {
-                for_each = try(managed_rule_group_configs.value.bot_control, null) != null ? [managed_rule_group_configs.value.bot_control] : []
-                content {
-                  inspection_level = aws_managed_rules_bot_control_rule_set.value.inspection_level
-                }
-              }
-
-              dynamic "aws_managed_rules_atp_rule_set" {
-                for_each = try(managed_rule_group_configs.value.atp, null) != null ? [managed_rule_group_configs.value.atp] : []
-                content {
-                  login_path = aws_managed_rules_atp_rule_set.value.login_path
-                }
-              }
-            }
-          }
-        }
-      }
-
-      visibility_config {
-        cloudwatch_metrics_enabled = try(rule.value.visibility_config.cloudwatch_metrics_enabled, true)
-        metric_name                = try(rule.value.visibility_config.metric_name, rule.value.name)
-        sampled_requests_enabled   = try(rule.value.visibility_config.sampled_requests_enabled, true)
+      immunity_time_property {
+        immunity_time = captcha_config.value.immunity_time
       }
     }
   }
 
-  ##
-  # External and Module-Managed Rule Group References
-  # Use arn for a literal ARN, or ref for a module-managed rule group name
-  # from settings.rule_groups.
-  ##
-  dynamic "rule" {
-    for_each = { for r in local.rule_group_references : r.name => r }
-
+  dynamic "challenge_config" {
+    for_each = try(var.settings.challenge_config, null) != null ? [var.settings.challenge_config] : []
     content {
-      name     = rule.value.name
-      priority = rule.value.priority
-
-      override_action {
-        dynamic "none" {
-          for_each = try(rule.value.override_action, "none") == "none" ? [1] : []
-          content {}
-        }
-        dynamic "count" {
-          for_each = try(rule.value.override_action, "none") == "count" ? [1] : []
-          content {}
-        }
-      }
-
-      statement {
-        rule_group_reference_statement {
-          arn = try(rule.value.ref, null) != null ? aws_wafv2_rule_group.this[rule.value.ref].arn : rule.value.arn
-
-          dynamic "rule_action_override" {
-            for_each = try(rule.value.excluded_rules, [])
-            content {
-              name = rule_action_override.value
-              action_to_use {
-                count {}
-              }
-            }
-          }
-        }
-      }
-
-      visibility_config {
-        cloudwatch_metrics_enabled = try(rule.value.visibility_config.cloudwatch_metrics_enabled, true)
-        metric_name                = try(rule.value.visibility_config.metric_name, rule.value.name)
-        sampled_requests_enabled   = try(rule.value.visibility_config.sampled_requests_enabled, true)
+      immunity_time_property {
+        immunity_time = challenge_config.value.immunity_time
       }
     }
   }
 
-  ##
-  # Custom Rule Groups (created by this module)
-  ##
-  dynamic "rule" {
-    for_each = { for rg in local.custom_rule_groups : rg.name => rg }
-
+  dynamic "association_config" {
+    for_each = try(var.settings.association_config, null) != null ? [var.settings.association_config] : []
     content {
-      name     = rule.value.name
-      priority = rule.value.priority
-
-      override_action {
-        dynamic "none" {
-          for_each = try(rule.value.override_action, "none") == "none" ? [1] : []
-          content {}
-        }
-        dynamic "count" {
-          for_each = try(rule.value.override_action, "none") == "count" ? [1] : []
-          content {}
+      dynamic "request_body" {
+        for_each = try(association_config.value.request_body, [])
+        content {
+          dynamic "api_gateway" {
+            for_each = try(request_body.value.api_gateway, null) != null ? [request_body.value.api_gateway] : []
+            content {
+              default_size_inspection_limit = api_gateway.value.default_size_inspection_limit
+            }
+          }
+          dynamic "app_runner_service" {
+            for_each = try(request_body.value.app_runner_service, null) != null ? [request_body.value.app_runner_service] : []
+            content {
+              default_size_inspection_limit = app_runner_service.value.default_size_inspection_limit
+            }
+          }
+          dynamic "application_load_balancer" {
+            for_each = try(request_body.value.application_load_balancer, null) != null ? [request_body.value.application_load_balancer] : []
+            content {
+              default_size_inspection_limit = application_load_balancer.value.default_size_inspection_limit
+            }
+          }
+          dynamic "appsync" {
+            for_each = try(request_body.value.appsync, null) != null ? [request_body.value.appsync] : []
+            content {
+              default_size_inspection_limit = appsync.value.default_size_inspection_limit
+            }
+          }
+          dynamic "cognito_user_pool" {
+            for_each = try(request_body.value.cognito_user_pool, null) != null ? [request_body.value.cognito_user_pool] : []
+            content {
+              default_size_inspection_limit = cognito_user_pool.value.default_size_inspection_limit
+            }
+          }
+          dynamic "verified_access_instance" {
+            for_each = try(request_body.value.verified_access_instance, null) != null ? [request_body.value.verified_access_instance] : []
+            content {
+              default_size_inspection_limit = verified_access_instance.value.default_size_inspection_limit
+            }
+          }
         }
       }
+    }
+  }
 
-      statement {
-        rule_group_reference_statement {
-          arn = aws_wafv2_rule_group.this[rule.value.name].arn
-        }
-      }
-
-      visibility_config {
-        cloudwatch_metrics_enabled = try(rule.value.visibility_config.cloudwatch_metrics_enabled, true)
-        metric_name                = try(rule.value.visibility_config.metric_name, rule.value.name)
-        sampled_requests_enabled   = try(rule.value.visibility_config.sampled_requests_enabled, true)
-      }
+  dynamic "custom_response_body" {
+    for_each = { for b in try(var.settings.custom_response_bodies, []) : b.key => b }
+    content {
+      key          = custom_response_body.value.key
+      content      = custom_response_body.value.content
+      content_type = custom_response_body.value.content_type
     }
   }
 
@@ -501,6 +424,392 @@ resource "aws_wafv2_web_acl" "this" {
 
   lifecycle {
     ignore_changes = [rule]
+  }
+}
+
+##
+# WAFv2 Web ACL Rules — AWS Managed Rule Groups
+##
+resource "aws_wafv2_web_acl_rule" "managed" {
+  for_each = { for r in local.managed_rules : r.name => r }
+
+  name        = each.value.name
+  priority    = each.value.priority
+  web_acl_arn = aws_wafv2_web_acl.this.arn
+
+  override_action {
+    dynamic "none" {
+      for_each = try(each.value.override_action, "none") == "none" ? [1] : []
+      content {}
+    }
+    dynamic "count" {
+      for_each = try(each.value.override_action, "none") == "count" ? [1] : []
+      content {}
+    }
+  }
+
+  statement {
+    managed_rule_group_statement {
+      name        = each.value.name
+      vendor_name = try(each.value.vendor_name, "AWS")
+      version     = try(each.value.version, null)
+
+      dynamic "rule_action_override" {
+        for_each = try(each.value.rule_action_overrides, [])
+        content {
+          name = rule_action_override.value.name
+          action_to_use {
+            dynamic "allow" {
+              for_each = try(rule_action_override.value.action, "count") == "allow" ? [1] : []
+              content {}
+            }
+            dynamic "block" {
+              for_each = try(rule_action_override.value.action, "count") == "block" ? [1] : []
+              content {}
+            }
+            dynamic "count" {
+              for_each = try(rule_action_override.value.action, "count") == "count" ? [1] : []
+              content {}
+            }
+            dynamic "captcha" {
+              for_each = try(rule_action_override.value.action, "count") == "captcha" ? [1] : []
+              content {}
+            }
+            dynamic "challenge" {
+              for_each = try(rule_action_override.value.action, "count") == "challenge" ? [1] : []
+              content {}
+            }
+          }
+        }
+      }
+
+      dynamic "managed_rule_group_configs" {
+        for_each = try(each.value.managed_rule_group_configs, [])
+        content {
+          dynamic "aws_managed_rules_bot_control_rule_set" {
+            for_each = try(managed_rule_group_configs.value.bot_control, null) != null ? [managed_rule_group_configs.value.bot_control] : []
+            content {
+              inspection_level        = aws_managed_rules_bot_control_rule_set.value.inspection_level
+              enable_machine_learning = try(aws_managed_rules_bot_control_rule_set.value.enable_machine_learning, true)
+            }
+          }
+
+          dynamic "aws_managed_rules_atp_rule_set" {
+            for_each = try(managed_rule_group_configs.value.atp, null) != null ? [managed_rule_group_configs.value.atp] : []
+            content {
+              login_path = aws_managed_rules_atp_rule_set.value.login_path
+
+              dynamic "request_inspection" {
+                for_each = try(aws_managed_rules_atp_rule_set.value.request_inspection, null) != null ? [aws_managed_rules_atp_rule_set.value.request_inspection] : []
+                content {
+                  password_field { identifier = request_inspection.value.password_field }
+                  payload_type = request_inspection.value.payload_type
+                  username_field { identifier = request_inspection.value.username_field }
+                }
+              }
+
+              dynamic "response_inspection" {
+                for_each = try(aws_managed_rules_atp_rule_set.value.response_inspection, null) != null ? [aws_managed_rules_atp_rule_set.value.response_inspection] : []
+                content {
+                  dynamic "body_contains" {
+                    for_each = try(response_inspection.value.body_contains, null) != null ? [response_inspection.value.body_contains] : []
+                    content {
+                      failure_strings = body_contains.value.failure_strings
+                      success_strings = body_contains.value.success_strings
+                    }
+                  }
+                  dynamic "header" {
+                    for_each = try(response_inspection.value.header, null) != null ? [response_inspection.value.header] : []
+                    content {
+                      failure_values = header.value.failure_values
+                      name           = header.value.name
+                      success_values = header.value.success_values
+                    }
+                  }
+                  dynamic "json" {
+                    for_each = try(response_inspection.value.json, null) != null ? [response_inspection.value.json] : []
+                    content {
+                      failure_values = json.value.failure_values
+                      identifier     = json.value.identifier
+                      success_values = json.value.success_values
+                    }
+                  }
+                  dynamic "status_code" {
+                    for_each = try(response_inspection.value.status_code, null) != null ? [response_inspection.value.status_code] : []
+                    content {
+                      failure_codes = status_code.value.failure_codes
+                      success_codes = status_code.value.success_codes
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          dynamic "aws_managed_rules_acfp_rule_set" {
+            for_each = try(managed_rule_group_configs.value.acfp, null) != null ? [managed_rule_group_configs.value.acfp] : []
+            content {
+              creation_path          = aws_managed_rules_acfp_rule_set.value.creation_path
+              registration_page_path = aws_managed_rules_acfp_rule_set.value.registration_page_path
+
+              dynamic "request_inspection" {
+                for_each = try(aws_managed_rules_acfp_rule_set.value.request_inspection, null) != null ? [aws_managed_rules_acfp_rule_set.value.request_inspection] : []
+                content {
+                  payload_type = request_inspection.value.payload_type
+
+                  dynamic "address_fields" {
+                    for_each = try(request_inspection.value.address_fields, [])
+                    content {
+                      identifiers = address_fields.value.identifiers
+                    }
+                  }
+                  dynamic "email_field" {
+                    for_each = try(request_inspection.value.email_field, null) != null ? [request_inspection.value.email_field] : []
+                    content {
+                      identifier = email_field.value.identifier
+                    }
+                  }
+                  dynamic "password_field" {
+                    for_each = try(request_inspection.value.password_field, null) != null ? [request_inspection.value.password_field] : []
+                    content {
+                      identifier = password_field.value.identifier
+                    }
+                  }
+                  dynamic "phone_number_fields" {
+                    for_each = try(request_inspection.value.phone_number_fields, [])
+                    content {
+                      identifiers = phone_number_fields.value.identifiers
+                    }
+                  }
+                  dynamic "username_field" {
+                    for_each = try(request_inspection.value.username_field, null) != null ? [request_inspection.value.username_field] : []
+                    content {
+                      identifier = username_field.value.identifier
+                    }
+                  }
+                }
+              }
+
+              dynamic "response_inspection" {
+                for_each = try(aws_managed_rules_acfp_rule_set.value.response_inspection, null) != null ? [aws_managed_rules_acfp_rule_set.value.response_inspection] : []
+                content {
+                  dynamic "body_contains" {
+                    for_each = try(response_inspection.value.body_contains, null) != null ? [response_inspection.value.body_contains] : []
+                    content {
+                      failure_strings = body_contains.value.failure_strings
+                      success_strings = body_contains.value.success_strings
+                    }
+                  }
+                  dynamic "header" {
+                    for_each = try(response_inspection.value.header, null) != null ? [response_inspection.value.header] : []
+                    content {
+                      failure_values = header.value.failure_values
+                      name           = header.value.name
+                      success_values = header.value.success_values
+                    }
+                  }
+                  dynamic "json" {
+                    for_each = try(response_inspection.value.json, null) != null ? [response_inspection.value.json] : []
+                    content {
+                      failure_values = json.value.failure_values
+                      identifier     = json.value.identifier
+                      success_values = json.value.success_values
+                    }
+                  }
+                  dynamic "status_code" {
+                    for_each = try(response_inspection.value.status_code, null) != null ? [response_inspection.value.status_code] : []
+                    content {
+                      failure_codes = status_code.value.failure_codes
+                      success_codes = status_code.value.success_codes
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  dynamic "captcha_config" {
+    for_each = try(each.value.captcha_config, null) != null ? [each.value.captcha_config] : []
+    content {
+      immunity_time_property {
+        immunity_time = captcha_config.value.immunity_time
+      }
+    }
+  }
+
+  dynamic "challenge_config" {
+    for_each = try(each.value.challenge_config, null) != null ? [each.value.challenge_config] : []
+    content {
+      immunity_time_property {
+        immunity_time = challenge_config.value.immunity_time
+      }
+    }
+  }
+
+  dynamic "rule_label" {
+    for_each = try(each.value.rule_labels, [])
+    content {
+      name = rule_label.value
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = try(each.value.visibility_config.cloudwatch_metrics_enabled, true)
+    metric_name                = try(each.value.visibility_config.metric_name, each.value.name)
+    sampled_requests_enabled   = try(each.value.visibility_config.sampled_requests_enabled, true)
+  }
+}
+
+##
+# WAFv2 Web ACL Rules — External and Module-Managed Rule Group References
+# Use arn for a literal ARN, or ref for a module-managed rule group name
+# from settings.rule_groups.
+##
+resource "aws_wafv2_web_acl_rule" "rule_group_references" {
+  for_each = { for r in local.rule_group_references : r.name => r }
+
+  name        = each.value.name
+  priority    = each.value.priority
+  web_acl_arn = aws_wafv2_web_acl.this.arn
+
+  override_action {
+    dynamic "none" {
+      for_each = try(each.value.override_action, "none") == "none" ? [1] : []
+      content {}
+    }
+    dynamic "count" {
+      for_each = try(each.value.override_action, "none") == "count" ? [1] : []
+      content {}
+    }
+  }
+
+  statement {
+    rule_group_reference_statement {
+      arn = try(each.value.ref, null) != null ? aws_wafv2_rule_group.this[each.value.ref].arn : each.value.arn
+
+      dynamic "rule_action_override" {
+        for_each = try(each.value.rule_action_overrides, [])
+        content {
+          name = rule_action_override.value.name
+          action_to_use {
+            dynamic "allow" {
+              for_each = try(rule_action_override.value.action, "count") == "allow" ? [1] : []
+              content {}
+            }
+            dynamic "block" {
+              for_each = try(rule_action_override.value.action, "count") == "block" ? [1] : []
+              content {}
+            }
+            dynamic "count" {
+              for_each = try(rule_action_override.value.action, "count") == "count" ? [1] : []
+              content {}
+            }
+            dynamic "captcha" {
+              for_each = try(rule_action_override.value.action, "count") == "captcha" ? [1] : []
+              content {}
+            }
+            dynamic "challenge" {
+              for_each = try(rule_action_override.value.action, "count") == "challenge" ? [1] : []
+              content {}
+            }
+          }
+        }
+      }
+    }
+  }
+
+  dynamic "captcha_config" {
+    for_each = try(each.value.captcha_config, null) != null ? [each.value.captcha_config] : []
+    content {
+      immunity_time_property {
+        immunity_time = captcha_config.value.immunity_time
+      }
+    }
+  }
+
+  dynamic "challenge_config" {
+    for_each = try(each.value.challenge_config, null) != null ? [each.value.challenge_config] : []
+    content {
+      immunity_time_property {
+        immunity_time = challenge_config.value.immunity_time
+      }
+    }
+  }
+
+  dynamic "rule_label" {
+    for_each = try(each.value.rule_labels, [])
+    content {
+      name = rule_label.value
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = try(each.value.visibility_config.cloudwatch_metrics_enabled, true)
+    metric_name                = try(each.value.visibility_config.metric_name, each.value.name)
+    sampled_requests_enabled   = try(each.value.visibility_config.sampled_requests_enabled, true)
+  }
+}
+
+##
+# WAFv2 Web ACL Rules — Custom Rule Groups (created by this module)
+##
+resource "aws_wafv2_web_acl_rule" "custom_rule_groups" {
+  for_each = { for rg in local.custom_rule_groups : rg.name => rg }
+
+  name        = each.value.name
+  priority    = each.value.priority
+  web_acl_arn = aws_wafv2_web_acl.this.arn
+
+  override_action {
+    dynamic "none" {
+      for_each = try(each.value.override_action, "none") == "none" ? [1] : []
+      content {}
+    }
+    dynamic "count" {
+      for_each = try(each.value.override_action, "none") == "count" ? [1] : []
+      content {}
+    }
+  }
+
+  statement {
+    rule_group_reference_statement {
+      arn = aws_wafv2_rule_group.this[each.value.name].arn
+    }
+  }
+
+  dynamic "captcha_config" {
+    for_each = try(each.value.captcha_config, null) != null ? [each.value.captcha_config] : []
+    content {
+      immunity_time_property {
+        immunity_time = captcha_config.value.immunity_time
+      }
+    }
+  }
+
+  dynamic "challenge_config" {
+    for_each = try(each.value.challenge_config, null) != null ? [each.value.challenge_config] : []
+    content {
+      immunity_time_property {
+        immunity_time = challenge_config.value.immunity_time
+      }
+    }
+  }
+
+  dynamic "rule_label" {
+    for_each = try(each.value.rule_labels, [])
+    content {
+      name = rule_label.value
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = try(each.value.visibility_config.cloudwatch_metrics_enabled, true)
+    metric_name                = try(each.value.visibility_config.metric_name, each.value.name)
+    sampled_requests_enabled   = try(each.value.visibility_config.sampled_requests_enabled, true)
   }
 }
 
