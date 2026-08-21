@@ -129,15 +129,100 @@ introduction: |-
 usage: |-
   ## Usage (Terragrunt)
 
-  ### Minimal — managed rules only, explicit name
+  This module is consumed through Terragrunt's built-in `scaffold` command.
+  Scaffold reads `.boilerplate/boilerplate.yml` from this repository and
+  generates `terragrunt.hcl`, `inputs.yaml`, and `local-tags.json` into the
+  current working directory. All deployment-specific configuration is then
+  edited in `inputs.yaml` — the generated `terragrunt.hcl` needs no changes.
+
+  ### 1. Scaffold a new deployment
+
+  ```sh
+  # 1. Create and enter the target deployment directory.
+  #    Scaffold writes into the CURRENT directory — create it first.
+  mkdir -p <environment>/<region>/<spoke>/waf-management
+  cd <environment>/<region>/<spoke>/waf-management
+
+  # 2. Scaffold the module (do NOT use --working-dir)
+  terragrunt scaffold github.com/cloudopsworks/terraform-module-aws-waf-management
+
+  # 3. Edit inputs.yaml with deployment-specific values
+  #    (all keys and comments are pre-populated from .boilerplate/inputs.yaml)
+  vi inputs.yaml
+
+  # 4. Apply
+  terragrunt apply
+  ```
+
+  Scaffold prompts for the generic boilerplate variables shared by every
+  CloudOps Works module:
+
+  | Variable | Type | Default | Purpose |
+  |---|---|---|---|
+  | `is_hub` | `bool` | `false` | Whether the deployment targets the hub account |
+  | `tags` | `map` | `{}` | Deployment-local tags, written to `local-tags.json` |
+
+  ### 2. Generated `inputs.yaml`
+
+  The scaffolded `inputs.yaml` carries every module-specific variable with its
+  `(Required)` / `(Optional)` annotation. Values sourced from the Terragrunt
+  hierarchy — `org` (from `env-inputs.yaml`), `spoke_def` (from
+  `spoke-inputs.yaml`), `extra_tags` (from the merged `*-tags.json` files) and
+  `is_hub` — are **not** present here; they are wired automatically.
+
+  ```yaml
+  # ── Web ACL naming — set name OR name_prefix, never both ────────────────────
+  # name: "my-waf-acl"        # (Required if name_prefix is not set) Explicit name for the WAF ACL.
+  #                           #   Used verbatim, no system_name suffix is appended. Default: null.
+  name_prefix: "myapp"        # (Required if name is not set) Prefix prepended to the computed
+                              #   system_name to form the ACL name: "<name_prefix>-<system_name>".
+                              #   Default: null. The module fails at plan time when both are null.
+
+  settings:                                  # (Optional) WAF module settings. Default: {}
+    scope: "REGIONAL"                        # (Required) Scope of the Web ACL: REGIONAL | CLOUDFRONT.
+                                             #   CLOUDFRONT-scoped ACLs must be deployed in us-east-1.
+    default_action: "allow"                  # (Optional) Action when no rule matches: allow | block. Default: allow.
+    # description: "Production WAF ACL"      # (Optional) Human-readable description of the ACL. Default: null.
+
+    managed_rules:                           # (Optional) AWS managed rule groups to attach. Default: [].
+      - name: "AWSManagedRulesCommonRuleSet" #   (Required) AWS managed rule group name.
+        priority: 10                         #   (Required) Priority, unique across ALL ACL rules; lower runs first.
+      - name: "AWSManagedRulesKnownBadInputsRuleSet"
+        priority: 20
+  ```
+
+  The complete annotated file — including IP sets, regex pattern sets, API keys,
+  associations, custom rule groups, inline rules with every WAFv2 statement type,
+  and logging — ships in [`.boilerplate/inputs.yaml`](.boilerplate/inputs.yaml)
+  and is copied verbatim by scaffold.
+
+  ### 3. Generated `terragrunt.hcl`
+
+  Scaffold renders the following from `.boilerplate/terragrunt.hcl`. It loads
+  `inputs.yaml` as `local.local_vars` and maps each module variable into the
+  `inputs` block — no hand-editing required:
 
   ```hcl
   locals {
     local_vars  = yamldecode(file("./inputs.yaml"))
+    spoke_vars  = yamldecode(file(find_in_parent_folders("spoke-inputs.yaml")))
+    region_vars = yamldecode(file(find_in_parent_folders("region-inputs.yaml")))
+    env_vars    = yamldecode(file(find_in_parent_folders("env-inputs.yaml")))
     global_vars = yamldecode(file(find_in_parent_folders("global-inputs.yaml")))
-    global_tags = jsondecode(file(find_in_parent_folders("global-tags.json")))
+
     local_tags  = jsondecode(file("./local-tags.json"))
-    tags        = merge(local.global_tags, local.local_tags)
+    spoke_tags  = jsondecode(file(find_in_parent_folders("spoke-tags.json")))
+    region_tags = jsondecode(file(find_in_parent_folders("region-tags.json")))
+    env_tags    = jsondecode(file(find_in_parent_folders("env-tags.json")))
+    global_tags = jsondecode(file(find_in_parent_folders("global-tags.json")))
+
+    tags = merge(
+      local.global_tags,
+      local.env_tags,
+      local.region_tags,
+      local.spoke_tags,
+      local.local_tags
+    )
   }
 
   include "root" {
@@ -145,461 +230,333 @@ usage: |-
   }
 
   terraform {
-    source = "git::https://github.com/cloudopsworks/terraform-module-aws-waf-management.git//?ref=v1.0.0"
+    source = "git::https://github.com/cloudopsworks/terraform-module-aws-waf-management.git//?ref=v2.0.2"
   }
 
   inputs = {
-    org        = local.global_vars.org
-    spoke_def  = local.local_vars.spoke_def
-    extra_tags = local.tags
-
-    name = try(local.local_vars.name, null)
-
-    settings = {
-      scope          = "REGIONAL"
-      default_action = "allow"
-
-      managed_rules = [
-        {
-          name     = "AWSManagedRulesCommonRuleSet"
-          priority = 10
-        },
-        {
-          name     = "AWSManagedRulesKnownBadInputsRuleSet"
-          priority = 20
-        },
-        {
-          name            = "AWSManagedRulesAmazonIpReputationList"
-          priority        = 30
-          override_action = "count"  # monitor only
-        },
-      ]
-    }
+    is_hub      = false
+    org         = local.env_vars.org
+    spoke_def   = local.spoke_vars.spoke
+    name        = try(local.local_vars.name, null)
+    name_prefix = try(local.local_vars.name_prefix, null)
+    settings    = try(local.local_vars.settings, {})
+    extra_tags  = local.tags
   }
   ```
 
-  ### Full — all features enabled
+  ### 4. Full `inputs.yaml` — all features enabled
 
-  ```hcl
-  inputs = {
-    org        = local.global_vars.org
-    spoke_def  = local.local_vars.spoke_def
-    extra_tags = local.tags
+  ```yaml
+  # Either name OR name_prefix must be set — never both.
+  # name: "acme-prod-waf"
+  name_prefix: "acme"                        # resolves to "acme-<system_name>"
 
-    # Either name OR name_prefix must be set — not both.
-    # name        = "acme-prod-waf"
-    name_prefix = "acme"   # resolves to "acme-<system_name>"
+  settings:
+    scope: "REGIONAL"                        # REGIONAL | CLOUDFRONT
+    default_action: "allow"                  # allow | block
+    description: "Production WAF ACL — ACME platform"
 
-    settings = {
-      scope          = "REGIONAL"   # REGIONAL | CLOUDFRONT
-      default_action = "allow"      # allow | block
-      description    = "Production WAF ACL — ACME platform"
+    visibility_config:
+      cloudwatch_metrics_enabled: true
+      sampled_requests_enabled: true
+      # metric_name defaults to the ACL name
 
-      visibility_config = {
-        cloudwatch_metrics_enabled = true
-        sampled_requests_enabled   = true
-        # metric_name defaults to the ACL name
-      }
+    # ── AWS managed rule groups ───────────────────────────────────────────────
+    managed_rules:
+      - name: "AWSManagedRulesCommonRuleSet"
+        priority: 10
+        override_action: "none"              # enforce; use "count" to monitor only
+        rule_action_overrides:               # override individual rules, not the whole group
+          - name: "SizeRestrictions_BODY"
+            action: "count"
+      - name: "AWSManagedRulesSQLiRuleSet"
+        priority: 20
+      - name: "AWSManagedRulesLinuxRuleSet"
+        priority: 30
+      - name: "AWSManagedRulesAmazonIpReputationList"
+        priority: 40
+      # Bot Control requires managed_rule_group_configs
+      - name: "AWSManagedRulesBotControlRuleSet"
+        priority: 50
+        managed_rule_group_configs:
+          - bot_control:
+              inspection_level: "COMMON"     # COMMON | TARGETED
+              enable_machine_learning: true
 
-      # ── AWS Managed Rule Groups ────────────────────────────────────────────
-      managed_rules = [
-        {
-          name            = "AWSManagedRulesCommonRuleSet"
-          priority        = 10
-          override_action = "none"   # enforce; use "count" to monitor
-          rule_action_overrides = [
-            # Override individual rules instead of the whole group
-            { name = "SizeRestrictions_BODY", action = "count" },
-          ]
-        },
-        {
-          name     = "AWSManagedRulesSQLiRuleSet"
-          priority = 20
-        },
-        {
-          name     = "AWSManagedRulesLinuxRuleSet"
-          priority = 30
-        },
-        {
-          name     = "AWSManagedRulesAmazonIpReputationList"
-          priority = 40
-        },
-        # Bot Control requires managed_rule_group_configs
-        {
-          name     = "AWSManagedRulesBotControlRuleSet"
-          priority = 50
-          managed_rule_group_configs = [
-            {
-              bot_control = {
-                inspection_level       = "COMMON"   # COMMON | TARGETED
-                enable_machine_learning = true
-              }
-            }
-          ]
-        },
-      ]
+    # ── IP sets (module-managed, referenceable with ref:) ─────────────────────
+    ip_sets:
+      - name: "blocked-ips"
+        ip_address_version: "IPV4"           # IPV4 | IPV6
+        addresses:
+          - "203.0.113.0/24"
+          - "198.51.100.42/32"
+        description: "Known bad IPv4 ranges"
 
-      # ── IP Sets (created by this module, referenceable via ref:) ─────────────
-      ip_sets = [
-        {
-          name               = "blocked-ips"
-          ip_address_version = "IPV4"   # IPV4 | IPV6
-          addresses = [
-            "203.0.113.0/24",
-            "198.51.100.42/32",
-          ]
-          description = "Known bad IPv4 ranges"
-        },
-      ]
+    # ── Regex pattern sets (module-managed, referenceable with ref:) ──────────
+    regex_pattern_sets:
+      - name: "malicious-paths"
+        description: "Common attack path patterns"
+        patterns:
+          - "^/admin/.*"
+          - "^/wp-.*"
+          - "^\\.env$"
 
-      # ── Regex Pattern Sets (created by this module, referenceable via ref:) ─
-      regex_pattern_sets = [
-        {
-          name        = "malicious-paths"
-          description = "Common attack path patterns"
-          patterns = [
-            "^/admin/.*",
-            "^/wp-.*",
-            "^\\.env$",
-          ]
-        },
-      ]
+    # ── API keys (mobile SDK token domain integration) ────────────────────────
+    api_keys:
+      - name: "mobile-app"
+        token_domains:
+          - "app.example.com"
+          - "api.example.com"
 
-      # ── API Keys (mobile SDK token domain integration) ─────────────────────
-      api_keys = [
-        {
-          name = "mobile-app"
-          token_domains = [
-            "app.example.com",
-            "api.example.com",
-          ]
-        },
-      ]
+    # ── Web ACL associations ──────────────────────────────────────────────────
+    associations:
+      - resource_arn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/abcdef01"
 
-      # ── Web ACL Associations ───────────────────────────────────────────────
-      associations = [
-        {
-          resource_arn = "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/abcdef01"
-        },
-      ]
+    # ── External rule group references (arn OR ref — never both) ──────────────
+    rule_group_references:
+      # Option A — literal ARN of a pre-existing rule group
+      - name: "shared-ip-allowlist"
+        priority: 5
+        arn: "arn:aws:wafv2:us-east-1:123456789012:regional/rulegroup/shared-ip-allowlist/abcdef01"
+        override_action: "none"
+      # Option B — ref to a rule group created by this module (settings.rule_groups[name])
+      - name: "ip-controls-via-ref"
+        priority: 65
+        ref: "ip-controls"
 
-      # ── External Rule Group References (arn or ref — not both) ───────────
-      rule_group_references = [
-        # Option A: literal ARN of a pre-existing rule group
-        {
-          name            = "shared-ip-allowlist"
-          priority        = 5
-          arn             = "arn:aws:wafv2:us-east-1:123456789012:regional/rulegroup/shared-ip-allowlist/abcdef01"
-          override_action = "none"
-        },
-        # Option B: ref to a rule group created by this module (settings.rule_groups[name])
-        {
-          name = "ip-controls-via-ref"
-          priority = 65
-          ref  = "ip-controls"
-        },
-      ]
+    # ── Custom rule groups (created by this module) ───────────────────────────
+    rule_groups:
+      - name: "ip-controls"
+        priority: 60
+        capacity: 50
+        description: "IP reputation and rate limiting"
+        rules:
+          # Block using a module-managed IP set (ref -> settings.ip_sets[name=blocked-ips])
+          - name: "block-bad-ips"
+            priority: 1
+            action: "block"
+            ip_set_reference:
+              ref: "blocked-ips"
+          # Rate limit per source IP
+          - name: "rate-limit-per-ip"
+            priority: 2
+            action: "block"
+            rate_based:
+              limit: 2000                    # requests per evaluation_window_sec
+              aggregate_key_type: "IP"       # IP | FORWARDED_IP
+              evaluation_window_sec: 300
+          # Geo-block specific countries
+          - name: "geo-block"
+            priority: 3
+            action: "block"
+            geo_match:
+              country_codes: ["CN", "RU", "KP"]
 
-      # ── Custom Rule Groups (created by this module) ────────────────────────
-      rule_groups = [
-        {
-          name          = "ip-controls"
-          priority      = 60
-          capacity      = 50
-          description   = "IP reputation and rate limiting"
+      - name: "http-hygiene"
+        priority: 70
+        capacity: 150
+        description: "HTTP header and body hygiene checks"
+        rules:
+          # Block requests carrying a specific User-Agent
+          - name: "block-bad-user-agent"
+            priority: 1
+            action: "block"
+            byte_match:
+              search_string: "BadBot/1.0"
+              positional_constraint: "CONTAINS"  # EXACTLY | STARTS_WITH | ENDS_WITH | CONTAINS | CONTAINS_WORD
+              field_to_match:
+                type: "SINGLE_HEADER"
+                name: "user-agent"
+              text_transformations:
+                - priority: 0
+                  type: "LOWERCASE"
+          # Block oversized request bodies
+          - name: "block-large-body"
+            priority: 2
+            action: "block"
+            size_constraint:
+              comparison_operator: "GT"      # EQ | NE | LE | LT | GE | GT
+              size: 8192
+              field_to_match:
+                type: "BODY"
+                oversize_handling: "CONTINUE"  # NO_MATCH | MATCH | CONTINUE
+              text_transformations:
+                - priority: 0
+                  type: "NONE"
+          # Block paths matching a module-managed regex pattern set
+          - name: "block-malicious-paths"
+            priority: 3
+            action: "block"
+            regex_pattern_set_reference:
+              ref: "malicious-paths"
+              field_to_match:
+                type: "URI_PATH"
+              text_transformations:
+                - priority: 0
+                  type: "LOWERCASE"
 
-          rules = [
-            # Block using a module-managed IP set (ref resolves to settings.ip_sets[name=blocked-ips])
-            {
-              name     = "block-bad-ips"
-              priority = 1
-              action   = "block"
-              ip_set_reference = {
-                ref = "blocked-ips"
-              }
-            },
-            # Rate limit per source IP
-            {
-              name     = "rate-limit-per-ip"
-              priority = 2
-              action   = "block"
-              rate_based = {
-                limit                 = 2000    # requests per evaluation_window_sec
-                aggregate_key_type    = "IP"    # IP | FORWARDED_IP
-                evaluation_window_sec = 300
-              }
-            },
-            # Geo-block specific countries
-            {
-              name     = "geo-block"
-              priority = 3
-              action   = "block"
-              geo_match = {
-                country_codes = ["CN", "RU", "KP"]
-              }
-            },
-          ]
-        },
+    # ── Custom inline rules ───────────────────────────────────────────────────
+    # Inline rules are attached directly to the Web ACL as standalone resources.
+    # Every WAFv2 statement type is supported. Use action (not override_action).
+    custom_rules:
+      # Block requests from known bad IPs (ref to a module-managed IP set)
+      - name: "block-bad-ips"
+        priority: 75
+        action: "block"
+        ip_set_reference:
+          ref: "blocked-ips"
+        visibility_config:
+          cloudwatch_metrics_enabled: true
+          metric_name: "AWS-block-bad-ips"
+          sampled_requests_enabled: true
+      # Rate-limit per source IP
+      - name: "rate-limit-api"
+        priority: 80
+        action: "block"
+        rate_based:
+          limit: 1000
+          aggregate_key_type: "IP"
+          evaluation_window_sec: 300
+        visibility_config:
+          cloudwatch_metrics_enabled: true
+          metric_name: "AWS-rate-limit-api"
+          sampled_requests_enabled: true
+      # SQLi detection on the query string
+      - name: "detect-sqli"
+        priority: 85
+        action: "block"
+        sqli_match:
+          sensitivity_level: "HIGH"
+          field_to_match:
+            type: "QUERY_STRING"
+          text_transformations:
+            - priority: 0
+              type: "URL_DECODE"
+            - priority: 1
+              type: "HTML_ENTITY_DECODE"
+        visibility_config:
+          cloudwatch_metrics_enabled: true
+          metric_name: "AWS-detect-sqli"
+          sampled_requests_enabled: true
+      # Block requests carrying a label set by a managed rule group
+      - name: "block-labeled-bots"
+        priority: 90
+        action: "block"
+        label_match:
+          scope: "LABEL"
+          key: "awswaf:managed:aws:bot-control:bot:category:scraping"
+        visibility_config:
+          cloudwatch_metrics_enabled: true
+          metric_name: "AWS-block-labeled-bots"
+          sampled_requests_enabled: true
+      # Compound — NOT from allowed countries AND matching a bad path
+      - name: "compound-geo-path-block"
+        priority: 95
+        action: "block"
+        and_statement:
+          statements:
+            - not_statement:
+                geo_match:
+                  country_codes: ["US", "CA", "GB"]
+            - regex_pattern_set_reference:
+                ref: "malicious-paths"
+                field_to_match:
+                  type: "URI_PATH"
+                text_transformations:
+                  - priority: 0
+                    type: "LOWERCASE"
+        visibility_config:
+          cloudwatch_metrics_enabled: true
+          metric_name: "AWS-compound-geo-path-block"
+          sampled_requests_enabled: true
 
-        {
-          name        = "http-hygiene"
-          priority    = 70
-          capacity    = 150
-          description = "HTTP header and body hygiene checks"
-
-          rules = [
-            # Block requests with a specific User-Agent string
-            {
-              name     = "block-bad-user-agent"
-              priority = 1
-              action   = "block"
-              byte_match = {
-                search_string         = "BadBot/1.0"
-                positional_constraint = "CONTAINS"   # EXACTLY | STARTS_WITH | ENDS_WITH | CONTAINS | CONTAINS_WORD
-                field_to_match = {
-                  type = "SINGLE_HEADER"
-                  name = "user-agent"
-                }
-                text_transformations = [
-                  { priority = 0, type = "LOWERCASE" }
-                ]
-              }
-            },
-            # Block oversized request bodies
-            {
-              name     = "block-large-body"
-              priority = 2
-              action   = "block"
-              size_constraint = {
-                comparison_operator = "GT"   # EQ | NE | LE | LT | GE | GT
-                size                = 8192
-                field_to_match = {
-                  type              = "BODY"
-                  oversize_handling = "CONTINUE"   # NO_MATCH | MATCH | CONTINUE
-                }
-                text_transformations = [
-                  { priority = 0, type = "NONE" }
-                ]
-              }
-            },
-            # Block paths matching a module-managed regex pattern set (ref resolves to settings.regex_pattern_sets[name=malicious-paths])
-            {
-              name     = "block-malicious-paths"
-              priority = 3
-              action   = "block"
-              regex_pattern_set_reference = {
-                ref = "malicious-paths"
-                field_to_match = {
-                  type = "URI_PATH"
-                }
-                text_transformations = [
-                  { priority = 0, type = "LOWERCASE" }
-                ]
-              }
-            },
-          ]
-        },
-      ]
-
-      # ── Custom Inline Rules ────────────────────────────────────────────────
-      # Inline rules are attached directly to the Web ACL as standalone resources.
-      # Every WAFv2 statement type is supported. Use action (not override_action).
-      custom_rules = [
-        # Block requests from known bad IPs (ref to module-managed ip set)
-        {
-          name     = "block-bad-ips"
-          priority = 75
-          action   = "block"
-          ip_set_reference = {
-            ref = "blocked-ips"
-          }
-          visibility_config = {
-            cloudwatch_metrics_enabled = true
-            metric_name                = "AWS-block-bad-ips"
-            sampled_requests_enabled   = true
-          }
-        },
-        # Rate-limit per source IP with label tagging
-        {
-          name     = "rate-limit-api"
-          priority = 80
-          action   = "block"
-          rate_based = {
-            limit                 = 1000
-            aggregate_key_type    = "IP"
-            evaluation_window_sec = 300
-          }
-          visibility_config = {
-            cloudwatch_metrics_enabled = true
-            metric_name                = "AWS-rate-limit-api"
-            sampled_requests_enabled   = true
-          }
-        },
-        # SQLi detection on query string
-        {
-          name     = "detect-sqli"
-          priority = 85
-          action   = "block"
-          sqli_match = {
-            sensitivity_level = "HIGH"
-            field_to_match = {
-              type = "QUERY_STRING"
-            }
-            text_transformations = [
-              { priority = 0, type = "URL_DECODE" },
-              { priority = 1, type = "HTML_ENTITY_DECODE" },
-            ]
-          }
-          visibility_config = {
-            cloudwatch_metrics_enabled = true
-            metric_name                = "AWS-detect-sqli"
-            sampled_requests_enabled   = true
-          }
-        },
-        # Block requests that carry a specific label (set by a managed rule group)
-        {
-          name     = "block-labeled-bots"
-          priority = 90
-          action   = "block"
-          label_match = {
-            scope = "LABEL"
-            key   = "awswaf:managed:aws:bot-control:bot:category:scraping"
-          }
-          visibility_config = {
-            cloudwatch_metrics_enabled = true
-            metric_name                = "AWS-block-labeled-bots"
-            sampled_requests_enabled   = true
-          }
-        },
-        # Compound: block requests that are NOT from allowed countries AND contain a bad path
-        {
-          name     = "compound-geo-path-block"
-          priority = 95
-          action   = "block"
-          and_statement = {
-            statements = [
-              {
-                not_statement = {
-                  geo_match = {
-                    country_codes = ["US", "CA", "GB"]
-                  }
-                }
-              },
-              {
-                regex_pattern_set_reference = {
-                  ref = "malicious-paths"
-                  field_to_match = { type = "URI_PATH" }
-                  text_transformations = [{ priority = 0, type = "LOWERCASE" }]
-                }
-              },
-            ]
-          }
-          visibility_config = {
-            cloudwatch_metrics_enabled = true
-            metric_name                = "AWS-compound-geo-path-block"
-            sampled_requests_enabled   = true
-          }
-        },
-      ]
-
-      # ── Logging ───────────────────────────────────────────────────────────
-      # Setting enabled = true creates a CloudWatch log group automatically:
-      #   aws-waf-logs-<acl-name>  (retention: retention_in_days, optional KMS)
-      logging = {
-        enabled           = true
-        retention_in_days = 90      # 0 = never expire; see valid values in variables-waf.tf
-        # kms_key_id = "arn:aws:kms:..."   # optional — encrypts the log group
-        destination_arns = [
-          "arn:aws:firehose:us-east-1:123456789012:deliverystream/aws-waf-logs-acme-prod",
-        ]
-        # Redact sensitive fields from stored logs
-        redacted_fields = [
-          { type = "QUERY_STRING" },
-          { type = "SINGLE_HEADER", name = "authorization" },
-        ]
-        # Only store blocked and counted requests (drop allowed traffic logs)
-        filter = {
-          default_behavior = "DROP"
-          filters = [
-            {
-              behavior    = "KEEP"
-              requirement = "MEETS_ANY"
-              conditions = [
-                { action_condition = "BLOCK" },
-                { action_condition = "COUNT" },
-              ]
-            },
-          ]
-        }
-      }
-    }
-  }
+    # ── Logging ───────────────────────────────────────────────────────────────
+    # enabled = true creates the CloudWatch log group automatically:
+    #   aws-waf-logs-<acl-name>  (retention: retention_in_days, optional KMS)
+    logging:
+      enabled: true
+      retention_in_days: 90                  # 0 = never expire; see .boilerplate/inputs.yaml for valid values
+      # kms_key_id: "arn:aws:kms:..."        # optional — encrypts the log group
+      destination_arns:
+        - "arn:aws:firehose:us-east-1:123456789012:deliverystream/aws-waf-logs-acme-prod"
+      # Redact sensitive fields from stored logs
+      redacted_fields:
+        - type: "QUERY_STRING"
+        - type: "SINGLE_HEADER"
+          name: "authorization"
+      # Only store blocked and counted requests (drop allowed-traffic logs)
+      filter:
+        default_behavior: "DROP"
+        filters:
+          - behavior: "KEEP"
+            requirement: "MEETS_ANY"
+            conditions:
+              - action_condition: "BLOCK"
+              - action_condition: "COUNT"
   ```
 
 examples: |-
   ## Common examples
 
+  Every snippet below is an excerpt of the scaffolded `inputs.yaml` — drop it
+  into the deployment directory created by `terragrunt scaffold` and run
+  `terragrunt apply`.
+
   ### CloudFront scope (global WAF for a CDN distribution)
 
-  When protecting a CloudFront distribution the module must be deployed in
-  `us-east-1` (the only region that accepts `CLOUDFRONT`-scoped resources) and
-  the resulting `web_acl_arn` output is passed to the CloudFront distribution.
+  A `CLOUDFRONT`-scoped ACL must be deployed in `us-east-1` — the only region
+  that accepts CloudFront-scoped WAFv2 resources. The resulting `web_acl_arn`
+  output is then attached from the CloudFront distribution itself;
+  `settings.associations` does not apply to this scope.
 
-  ```hcl
-  inputs = {
-    org  = local.global_vars.org
-    name = "acme-cloudfront-waf"
+  ```yaml
+  name: "acme-cloudfront-waf"
 
-    settings = {
-      scope          = "CLOUDFRONT"
-      default_action = "allow"
-
-      managed_rules = [
-        { name = "AWSManagedRulesCommonRuleSet",         priority = 10 },
-        { name = "AWSManagedRulesKnownBadInputsRuleSet", priority = 20 },
-      ]
-    }
-  }
+  settings:
+    scope: "CLOUDFRONT"
+    default_action: "allow"
+    managed_rules:
+      - name: "AWSManagedRulesCommonRuleSet"
+        priority: 10
+      - name: "AWSManagedRulesKnownBadInputsRuleSet"
+        priority: 20
   ```
 
   ### Count mode — non-blocking audit before enforcement
 
-  Use `override_action = "count"` on all rule groups to observe what would be
-  blocked without actually blocking traffic. Flip to `"none"` when confident.
+  Set `override_action: "count"` on every rule group to observe what would be
+  blocked without blocking real traffic. Flip to `"none"` once the CloudWatch
+  metrics look clean.
 
-  ```hcl
-  managed_rules = [
-    {
-      name            = "AWSManagedRulesCommonRuleSet"
-      priority        = 10
-      override_action = "count"
-    },
-    {
-      name            = "AWSManagedRulesSQLiRuleSet"
-      priority        = 20
-      override_action = "count"
-    },
-  ]
+  ```yaml
+  settings:
+    scope: "REGIONAL"
+    managed_rules:
+      - name: "AWSManagedRulesCommonRuleSet"
+        priority: 10
+        override_action: "count"
+      - name: "AWSManagedRulesSQLiRuleSet"
+        priority: 20
+        override_action: "count"
   ```
 
-  ### Attaching the ACL to an ALB (inline association)
+  ### Attaching the ACL to an ALB
 
   Pass the ALB ARN in `settings.associations` and the module creates the
   `aws_wafv2_web_acl_association` resource automatically:
 
-  ```hcl
-  settings = {
-    scope = "REGIONAL"
-    associations = [
-      { resource_arn = "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/abc123" },
-    ]
-    managed_rules = [
-      { name = "AWSManagedRulesCommonRuleSet", priority = 10 },
-    ]
-  }
+  ```yaml
+  settings:
+    scope: "REGIONAL"
+    associations:
+      - resource_arn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/abc123"
+    managed_rules:
+      - name: "AWSManagedRulesCommonRuleSet"
+        priority: 10
   ```
 
-  Alternatively, associate from the consuming stack using the module output:
+  Alternatively, associate from the consuming stack using the module output
+  (useful when the ALB is created in the same Terragrunt unit):
 
   ```hcl
   resource "aws_wafv2_web_acl_association" "alb" {
@@ -614,154 +571,151 @@ examples: |-
   attached directly to the ACL. Use `action` (not `override_action`) — these are
   terminal rules, not rule group references.
 
-  ```hcl
-  settings = {
-    scope = "REGIONAL"
+  ```yaml
+  settings:
+    scope: "REGIONAL"
+    custom_rules:
+      # XSS detection on the request body
+      - name: "detect-xss-body"
+        priority: 80
+        action: "block"
+        xss_match:
+          field_to_match:
+            type: "BODY"
+            oversize_handling: "NO_MATCH"
+          text_transformations:
+            - priority: 0
+              type: "HTML_ENTITY_DECODE"
+        visibility_config:
+          cloudwatch_metrics_enabled: true
+          metric_name: "AWS-detect-xss-body"
+          sampled_requests_enabled: true
+      # Compound — rate-limit OR geo-block (either condition triggers)
+      - name: "rate-or-geo-block"
+        priority: 85
+        action: "block"
+        or_statement:
+          statements:
+            - rate_based:
+                limit: 500
+                aggregate_key_type: "IP"
+                evaluation_window_sec: 60
+            - geo_match:
+                country_codes: ["KP", "IR"]
+        visibility_config:
+          cloudwatch_metrics_enabled: true
+          metric_name: "AWS-rate-or-geo-block"
+          sampled_requests_enabled: true
 
-    custom_rules = [
-      # XSS detection on request body
-      {
-        name     = "detect-xss-body"
-        priority = 80
-        action   = "block"
-        xss_match = {
-          field_to_match = {
-            type              = "BODY"
-            oversize_handling = "NO_MATCH"
-          }
-          text_transformations = [
-            { priority = 0, type = "HTML_ENTITY_DECODE" }
-          ]
-        }
-        visibility_config = {
-          cloudwatch_metrics_enabled = true
-          metric_name                = "AWS-detect-xss-body"
-          sampled_requests_enabled   = true
-        }
-      },
-      # Compound: rate-limit OR geo-block (either condition triggers)
-      {
-        name     = "rate-or-geo-block"
-        priority = 85
-        action   = "block"
-        or_statement = {
-          statements = [
-            {
-              rate_based = {
-                limit                 = 500
-                aggregate_key_type    = "IP"
-                evaluation_window_sec = 60
-              }
-            },
-            {
-              geo_match = {
-                country_codes = ["KP", "IR"]
-              }
-            },
-          ]
-        }
-        visibility_config = {
-          cloudwatch_metrics_enabled = true
-          metric_name                = "AWS-rate-or-geo-block"
-          sampled_requests_enabled   = true
-        }
-      },
-    ]
-
-    managed_rules = [
-      { name = "AWSManagedRulesCommonRuleSet", priority = 10 },
-    ]
-  }
+    managed_rules:
+      - name: "AWSManagedRulesCommonRuleSet"
+        priority: 10
   ```
 
   ### Using module-managed IP sets and regex pattern sets with `ref:`
 
-  Define the sets inside `settings` and reference them by name in rule statements
-  using `ref:<name>` — no need to look up ARNs manually:
+  Define the sets inside `settings` and reference them by name from rule
+  statements with `ref: "<name>"` — no ARN lookups required. Terraform resolves
+  the ARN at plan time with full dependency tracking.
 
-  ```hcl
-  settings = {
-    scope = "REGIONAL"
+  ```yaml
+  settings:
+    scope: "REGIONAL"
 
-    ip_sets = [
-      {
-        name               = "scanners"
-        ip_address_version = "IPV4"
-        addresses          = ["198.51.100.0/24"]
-      },
-    ]
+    ip_sets:
+      - name: "scanners"
+        ip_address_version: "IPV4"
+        addresses:
+          - "198.51.100.0/24"
 
-    regex_pattern_sets = [
-      {
-        name     = "bad-paths"
-        patterns = ["^/\\.git/.*", "^/wp-admin/.*"]
-      },
-    ]
+    regex_pattern_sets:
+      - name: "bad-paths"
+        patterns:
+          - "^/\\.git/.*"
+          - "^/wp-admin/.*"
 
-    rule_groups = [
-      {
-        name     = "custom-blocks"
-        priority = 50
-        capacity = 100
-        rules = [
-          {
-            name             = "block-scanners"
-            priority         = 1
-            action           = "block"
-            ip_set_reference = { ref = "scanners" }
-          },
-          {
-            name     = "block-bad-paths"
-            priority = 2
-            action   = "block"
-            regex_pattern_set_reference = {
-              ref            = "bad-paths"
-              field_to_match = { type = "URI_PATH" }
-              text_transformations = [{ priority = 0, type = "LOWERCASE" }]
-            }
-          },
-        ]
-      },
-    ]
-  }
+    rule_groups:
+      - name: "custom-blocks"
+        priority: 50
+        capacity: 100
+        rules:
+          - name: "block-scanners"
+            priority: 1
+            action: "block"
+            ip_set_reference:
+              ref: "scanners"
+          - name: "block-bad-paths"
+            priority: 2
+            action: "block"
+            regex_pattern_set_reference:
+              ref: "bad-paths"
+              field_to_match:
+                type: "URI_PATH"
+              text_transformations:
+                - priority: 0
+                  type: "LOWERCASE"
+  ```
+
+  ### Logging to CloudWatch only
+
+  Setting `logging.enabled: true` is enough — the module creates the
+  `aws-waf-logs-<acl-name>` log group and wires its ARN in as the first
+  destination. `destination_arns` is only needed for extra sinks such as
+  Kinesis Data Firehose or S3.
+
+  ```yaml
+  settings:
+    scope: "REGIONAL"
+    managed_rules:
+      - name: "AWSManagedRulesCommonRuleSet"
+        priority: 10
+    logging:
+      enabled: true
+      retention_in_days: 30
+      redacted_fields:
+        - type: "SINGLE_HEADER"
+          name: "authorization"
   ```
 
 quickstart: |-
   ## Quick start
 
-  1. **Initialize** a new Terragrunt layer pointing at this module:
+  1. **Scaffold** a new deployment directory from this module:
 
-     ```hcl
-     terraform {
-       source = "git::https://github.com/cloudopsworks/terraform-module-aws-waf-management.git//?ref=v1.0.0"
-     }
+     ```sh
+     mkdir -p prod/us-east-1/001/waf-management
+     cd prod/us-east-1/001/waf-management
+     terragrunt scaffold github.com/cloudopsworks/terraform-module-aws-waf-management
      ```
 
-  2. **Provide** the required inputs — either `name` or `name_prefix` plus
+     Answer the `is_hub` and `tags` prompts. Scaffold writes `terragrunt.hcl`,
+     `inputs.yaml`, and `local-tags.json` into the current directory.
+
+  2. **Edit `inputs.yaml`** — set either `name` or `name_prefix`, plus
      `settings.scope`:
 
-     ```hcl
-     inputs = {
-       org         = local.global_vars.org
-       name_prefix = "myapp"
-       settings = {
-         scope = "REGIONAL"
-         managed_rules = [
-           { name = "AWSManagedRulesCommonRuleSet", priority = 10 },
-         ]
-       }
-     }
+     ```yaml
+     name_prefix: "myapp"        # ACL name becomes "myapp-<system_name>"
+
+     settings:
+       scope: "REGIONAL"         # REGIONAL | CLOUDFRONT
+       default_action: "allow"
+       managed_rules:
+         - name: "AWSManagedRulesCommonRuleSet"
+           priority: 10
      ```
 
   3. **Plan and apply**:
 
-     ```shell
+     ```sh
      terragrunt plan
      terragrunt apply
      ```
 
-  4. **Associate** the resulting `web_acl_arn` output with your ALB, API Gateway
-     stage, or CloudFront distribution.
+  4. **Attach the ACL** to the protected resource — either by adding
+     `settings.associations` to `inputs.yaml` (ALB, API Gateway stage, AppSync,
+     Cognito user pool, App Runner, Verified Access) or by consuming the
+     `web_acl_arn` output from a CloudFront distribution.
 
 include:
   - "docs/targets.md"

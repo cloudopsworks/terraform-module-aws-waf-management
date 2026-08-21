@@ -1,1 +1,400 @@
-# Module configuration
+##
+# (c) 2021-2026
+#     Cloud Ops Works LLC - https://cloudops.works/
+#     Find us on:
+#       GitHub: https://github.com/cloudopsworks
+#       WebSite: https://cloudops.works
+#     Distributed Under Apache v2.0 License
+#
+# Module configuration — AWS WAFv2 Management
+#
+# This file is loaded by terragrunt.hcl as local.local_vars and wired into the
+# module `inputs` block. Only module-specific variables belong here.
+# The following are supplied automatically by the Terragrunt hierarchy and must
+# NOT be declared in this file:
+#   is_hub      -> injected by the boilerplate/template engine
+#   spoke_def   -> sourced from spoke-inputs.yaml
+#   org         -> sourced from env-inputs.yaml
+#   extra_tags  -> built from the merged *-tags.json files
+
+# ── Web ACL naming — set name OR name_prefix, never both ──────────────────────
+# name: "my-waf-acl"        # (Required if name_prefix is not set) Explicit name for the WAF ACL.
+#                           #   Used verbatim, no system_name suffix is appended. Default: null.
+name_prefix: "myapp"        # (Required if name is not set) Prefix prepended to the computed
+                            #   system_name to form the ACL name: "<name_prefix>-<system_name>".
+                            #   Default: null. The module fails at plan time when both are null.
+
+# ── settings — all WAF configuration lives under this single key ──────────────
+settings:                                    # (Optional) WAF module settings. Default: {}
+
+  # ── Top-level ACL settings ──────────────────────────────────────────────────
+  scope: "REGIONAL"                          # (Required) Scope of the Web ACL: REGIONAL | CLOUDFRONT.
+                                             #   CLOUDFRONT-scoped ACLs must be deployed in us-east-1.
+  default_action: "allow"                    # (Optional) Action when no rule matches: allow | block. Default: allow.
+  # description: "Production WAF ACL"        # (Optional) Human-readable description of the ACL. Default: null.
+  # token_domains:                           # (Optional) Domains AWS WAF accepts CAPTCHA/challenge tokens from.
+  #   - "example.com"                        #   Enables cross-domain token reuse. Default: [].
+
+  # ── CAPTCHA and challenge config (web ACL level) ────────────────────────────
+  # captcha_config:                          # (Optional) Web ACL-level CAPTCHA token immunity time.
+  #   immunity_time: 300                     #   (Required) Seconds a CAPTCHA token stays valid (60–259200). Default: 300.
+  # challenge_config:                        # (Optional) Web ACL-level challenge token immunity time.
+  #   immunity_time: 300                     #   (Required) Seconds a challenge token stays valid (300–259200). Default: 300.
+
+  # ── Association config — request body inspection size limits ────────────────
+  # association_config:                      # (Optional) Overrides the default 16 KB body inspection limit.
+  #   request_body:                          #   (Optional) Per-resource-type size limit overrides.
+  #     - api_gateway:                       #     (Optional) API Gateway REST API.
+  #         default_size_inspection_limit: "KB_16"   # (Required) KB_16 | KB_32 | KB_48 | KB_64.
+  #     - app_runner_service:                #     (Optional) AWS App Runner service.
+  #         default_size_inspection_limit: "KB_16"
+  #     - cloudfront:                        #     (Optional) CloudFront distribution.
+  #         default_size_inspection_limit: "KB_16"
+  #     - cognito_user_pool:                 #     (Optional) Amazon Cognito user pool.
+  #         default_size_inspection_limit: "KB_16"
+  #     - verified_access_instance:          #     (Optional) AWS Verified Access instance.
+  #         default_size_inspection_limit: "KB_16"
+
+  # ── Custom response bodies ──────────────────────────────────────────────────
+  # custom_response_bodies:                  # (Optional) Named bodies reusable from block actions. Default: [].
+  #   - key: "custom-403"                    #   (Required) Unique key referenced by a block action custom_response.
+  #     content: "<html>Blocked</html>"      #   (Required) Response body content.
+  #     content_type: "TEXT_HTML"            #   (Required) TEXT_PLAIN | TEXT_HTML | APPLICATION_JSON.
+
+  # ── Top-level visibility config ─────────────────────────────────────────────
+  # visibility_config:                       # (Optional) CloudWatch metrics/sampling defaults for the ACL.
+  #   cloudwatch_metrics_enabled: true       #   (Optional) Publish CloudWatch metrics. Default: true.
+  #   metric_name: "my-waf-acl"              #   (Optional) CloudWatch metric name. Default: the ACL name.
+  #   sampled_requests_enabled: true         #   (Optional) Store a sample of matched requests. Default: true.
+
+  # ── IP sets (created by this module, referenceable with ref:) ───────────────
+  # ip_sets:                                 # (Optional) Module-managed IP sets. Default: [].
+  #   - name: "blocked-ips"                  #   (Required) Module-internal key; final name is "<acl-name>-<name>".
+  #     ip_address_version: "IPV4"           #   (Required) IPV4 | IPV6.
+  #     addresses:                           #   (Optional) CIDR blocks matching ip_address_version. Default: [].
+  #       - "203.0.113.0/24"
+  #     description: "Known bad IPv4 ranges" #   (Optional) Human-readable description. Default: null.
+
+  # ── Regex pattern sets (created by this module, referenceable with ref:) ────
+  # regex_pattern_sets:                      # (Optional) Module-managed regex pattern sets. Default: [].
+  #   - name: "malicious-paths"              #   (Required) Module-internal key; final name is "<acl-name>-<name>".
+  #     patterns:                            #   (Required) PCRE-compatible regex strings.
+  #       - "^/admin/.*"
+  #       - "^/wp-.*"
+  #     description: "Attack path patterns"  #   (Optional) Human-readable description. Default: null.
+
+  # ── API keys (mobile SDK token domain integration) ──────────────────────────
+  # api_keys:                                # (Optional) WAFv2 API keys for the mobile SDK. Default: [].
+  #   - name: "mobile-app"                   #   (Required) Module-internal label used as the for_each key.
+  #     token_domains:                       #   (Required) Fully qualified domains validated for tokens.
+  #       - "app.example.com"
+
+  # ── Web ACL associations ────────────────────────────────────────────────────
+  # associations:                            # (Optional) Resources to attach the ACL to. Default: [].
+  #   - resource_arn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/abc123"
+  #                                          #   (Required) ARN of an ALB, API Gateway stage, AppSync GraphQL API,
+  #                                          #     Cognito user pool, App Runner service, or Verified Access instance.
+  #                                          #     CLOUDFRONT-scoped ACLs cannot use this — attach the ACL from the
+  #                                          #     CloudFront distribution instead.
+
+  # ── AWS managed rule groups ─────────────────────────────────────────────────
+  managed_rules:                             # (Optional) AWS managed rule groups to attach. Default: [].
+    - name: "AWSManagedRulesCommonRuleSet"   #   (Required) AWS managed rule group name.
+      priority: 10                           #   (Required) Evaluation priority, unique across ALL ACL rules; lower runs first.
+    - name: "AWSManagedRulesKnownBadInputsRuleSet"
+      priority: 20
+  #   - name: "AWSManagedRulesAmazonIpReputationList"
+  #     priority: 30
+  #     vendor_name: "AWS"                   #   (Optional) Rule group vendor. Default: AWS.
+  #     override_action: "count"             #   (Optional) none (enforce) | count (monitor only). Default: none.
+  #     version: null                        #   (Optional) Pinned rule group version. Default: null (latest).
+  #     rule_action_overrides:               #   (Optional) Per-rule overrides inside the managed group. Default: [].
+  #       - name: "SizeRestrictions_BODY"    #     (Required) Rule name within the managed group.
+  #         action: "count"                  #     (Required) allow | block | count | captcha | challenge. Default: count.
+  #     managed_rule_group_configs:          #   (Optional) Required by BotControl, ATP and ACFP rule groups. Default: [].
+  #       - bot_control:                     #     (Optional) AWSManagedRulesBotControlRuleSet configuration.
+  #           inspection_level: "COMMON"     #       (Required) COMMON | TARGETED.
+  #           enable_machine_learning: true  #       (Optional) Enable ML for targeted inspection. Default: true.
+  #       - atp:                             #     (Optional) AWSManagedRulesATPRuleSet — account takeover protection.
+  #           login_path: "/login"           #       (Required) Login endpoint inspected for credential theft.
+  #           request_inspection:            #       (Optional) How to read credentials from the login request.
+  #             payload_type: "JSON"         #         (Required) JSON | FORM_ENCODED.
+  #             username_field: "/username"  #         (Required) Username field identifier.
+  #             password_field: "/password"  #         (Required) Password field identifier.
+  #           response_inspection:           #       (Optional) How to detect login success/failure. Pick one sub-block.
+  #             status_code:                 #         (Optional) Inspect the HTTP status code.
+  #               success_codes: [200]       #           (Required) Codes meaning success.
+  #               failure_codes: [401, 403]  #           (Required) Codes meaning failure.
+  #             header:                      #         (Optional) Inspect a response header.
+  #               name: "x-auth-result"      #           (Required) Header name.
+  #               success_values: ["success"]#           (Required) Values meaning success.
+  #               failure_values: ["failed"] #           (Required) Values meaning failure.
+  #             body_contains:               #         (Optional) Inspect the response body for strings.
+  #               success_strings: ["Login successful"]
+  #               failure_strings: ["Invalid credentials"]
+  #             json:                        #         (Optional) Inspect a JSON field in the response body.
+  #               identifier: "/result"      #           (Required) JSON Pointer to the field.
+  #               success_values: ["success"]
+  #               failure_values: ["failed"]
+  #       - acfp:                            #     (Optional) AWSManagedRulesACFPRuleSet — account creation fraud prevention.
+  #           creation_path: "/signup"       #       (Required) Account creation endpoint path.
+  #           registration_page_path: "/register"  # (Required) Registration page path.
+  #           request_inspection:            #       (Optional) Fields inspected on the creation request.
+  #             payload_type: "JSON"         #         (Required) JSON | FORM_ENCODED.
+  #             username_field:              #         (Optional) Username field identifier.
+  #               identifier: "/username"
+  #             password_field:              #         (Optional) Password field identifier.
+  #               identifier: "/password"
+  #             email_field:                 #         (Optional) Email field identifier.
+  #               identifier: "/email"
+  #             address_fields:              #         (Optional) Address field identifiers.
+  #               - identifiers: ["/address1"]
+  #             phone_number_fields:         #         (Optional) Phone number field identifiers.
+  #               - identifiers: ["/phone"]
+  #           response_inspection:           #       (Optional) Same structure as the ATP response_inspection above.
+  #     captcha_config:                      #   (Optional) Per-rule CAPTCHA immunity, overrides the ACL-level value.
+  #       immunity_time: 300                 #     (Required) Seconds (60–259200).
+  #     challenge_config:                    #   (Optional) Per-rule challenge immunity, overrides the ACL-level value.
+  #       immunity_time: 300                 #     (Required) Seconds (300–259200).
+  #     rule_labels:                         #   (Optional) Labels added to matching requests, up to 5. Default: [].
+  #       - "custom:managed-rule-match"      #     (Required) Pattern: namespace1:namespace2:labelName.
+  #     visibility_config:                   #   (Optional) Per-rule visibility config; inherits the ACL defaults.
+  #       cloudwatch_metrics_enabled: true
+  #       metric_name: "common-rule-set"
+  #       sampled_requests_enabled: true
+
+  # ── External rule group references ──────────────────────────────────────────
+  # rule_group_references:                   # (Optional) Attach pre-existing or module-managed rule groups. Default: [].
+  #   - name: "shared-ip-allowlist"          #   (Required) Label used as the rule name inside the ACL.
+  #     priority: 5                          #   (Required) Evaluation priority, unique across ALL ACL rules.
+  #     arn: "arn:aws:wafv2:us-east-1:123456789012:regional/rulegroup/shared/abc123"
+  #                                          #   (Option A) Literal ARN of an existing WAFv2 rule group.
+  #     ref: "ip-controls"                   #   (Option B) Name of a module-managed rule group (settings.rule_groups[name]).
+  #                                          #     Provide arn OR ref — never both.
+  #     override_action: "none"              #   (Optional) none | count. Default: none.
+  #     rule_action_overrides:               #   (Optional) Per-rule overrides inside the referenced group. Default: [].
+  #       - name: "RuleName"                 #     (Required) Rule name within the group.
+  #         action: "count"                  #     (Required) allow | block | count | captcha | challenge. Default: count.
+  #     captcha_config:                      #   (Optional) Per-rule CAPTCHA immunity time.
+  #       immunity_time: 300                 #     (Required) Seconds (60–259200).
+  #     challenge_config:                    #   (Optional) Per-rule challenge immunity time.
+  #       immunity_time: 300                 #     (Required) Seconds (300–259200).
+  #     rule_labels:                         #   (Optional) Labels added to matching requests, up to 5. Default: [].
+  #       - "custom:ref-rule-match"
+  #     visibility_config:                   #   (Optional) Per-rule visibility config.
+  #       cloudwatch_metrics_enabled: true
+  #       metric_name: "shared-ip-allowlist"
+  #       sampled_requests_enabled: true
+
+  # ── Custom rule groups (created by this module) ─────────────────────────────
+  # rule_groups:                             # (Optional) Rule groups created and attached by this module. Default: [].
+  #   - name: "ip-controls"                  #   (Required) Name suffix; final name is "<acl-name>-<name>".
+  #     priority: 60                         #   (Required) Evaluation priority in the ACL, unique across ALL ACL rules.
+  #     capacity: 100                        #   (Required) WAF Capacity Units reserved for the group (10–5000).
+  #     description: "IP controls"           #   (Optional) Human-readable description. Default: null.
+  #     override_action: "none"              #   (Optional) none | count for the ACL reference. Default: none.
+  #     captcha_config:                      #   (Optional) Per-rule CAPTCHA immunity time.
+  #       immunity_time: 300                 #     (Required) Seconds (60–259200).
+  #     challenge_config:                    #   (Optional) Per-rule challenge immunity time.
+  #       immunity_time: 300                 #     (Required) Seconds (300–259200).
+  #     rule_labels:                         #   (Optional) Labels added to matching requests, up to 5. Default: [].
+  #       - "custom:rule-group-match"
+  #     visibility_config:                   #   (Optional) Rule group-level visibility config.
+  #       cloudwatch_metrics_enabled: true
+  #       metric_name: "ip-controls"
+  #       sampled_requests_enabled: true
+  #     rules:                               #   (Optional) Rules inside the group — exactly ONE statement per rule. Default: [].
+  #       - name: "block-bad-ips"            #     (Required) Rule name, unique within the group.
+  #         priority: 1                      #     (Required) Priority within the group.
+  #         action: "block"                  #     (Required) allow | block | count | captcha.
+  #         visibility_config:               #     (Optional) Per-rule visibility config.
+  #           cloudwatch_metrics_enabled: true
+  #           metric_name: "block-bad-ips"
+  #           sampled_requests_enabled: true
+  #
+  #         # Statement types available inside rule groups — set exactly one:
+  #         ip_set_reference:                #     (Optional) Match source IPs against an IP set.
+  #           arn: "arn:aws:wafv2:..."       #       (Option A) Literal ARN of an existing IP set.
+  #           ref: "blocked-ips"             #       (Option B) Name of a module-managed IP set. arn OR ref, never both.
+  #         geo_match:                       #     (Optional) Match requests by origin country.
+  #           country_codes: ["CN", "RU"]    #       (Required) ISO 3166-1 alpha-2 codes.
+  #         rate_based:                      #     (Optional) Match when a source exceeds a request rate.
+  #           limit: 2000                    #       (Required) Requests per window (100–2000000000).
+  #           aggregate_key_type: "IP"       #       (Optional) IP | FORWARDED_IP. Default: IP.
+  #           evaluation_window_sec: 300     #       (Optional) 60 | 120 | 300 | 600. Default: 300.
+  #         byte_match:                      #     (Optional) Match a literal string in a request field.
+  #           search_string: "badbot"        #       (Required) String to search for.
+  #           positional_constraint: "CONTAINS"  #   (Required) EXACTLY | STARTS_WITH | ENDS_WITH | CONTAINS | CONTAINS_WORD.
+  #           field_to_match:                #       (Required) Request component to inspect.
+  #             type: "URI_PATH"             #         (Required) URI_PATH | QUERY_STRING | METHOD | BODY |
+  #                                          #           ALL_QUERY_ARGUMENTS | SINGLE_HEADER | SINGLE_QUERY_ARGUMENT.
+  #             name: null                   #         (Optional) Header/argument name — required for SINGLE_* types.
+  #             oversize_handling: "NO_MATCH"#         (Optional) BODY only: NO_MATCH | MATCH | CONTINUE.
+  #           text_transformations:          #       (Optional) Applied before matching, lowest priority first. Default: [].
+  #             - priority: 0                #         (Required) Transformation order.
+  #               type: "LOWERCASE"          #         (Required) NONE | LOWERCASE | URL_DECODE | HTML_ENTITY_DECODE |
+  #                                          #           COMPRESS_WHITE_SPACE | CMD_LINE.
+  #         size_constraint:                 #     (Optional) Match on the size of a request field.
+  #           comparison_operator: "GT"      #       (Required) EQ | NE | LE | LT | GE | GT.
+  #           size: 8192                     #       (Required) Threshold in bytes.
+  #           field_to_match:                #       (Required) Same field types as byte_match.
+  #             type: "BODY"
+  #             oversize_handling: "CONTINUE"
+  #           text_transformations:
+  #             - priority: 0
+  #               type: "NONE"
+  #         regex_pattern_set_reference:     #     (Optional) Match a field against a regex pattern set.
+  #           arn: "arn:aws:wafv2:..."       #       (Option A) Literal ARN of an existing regex pattern set.
+  #           ref: "malicious-paths"         #       (Option B) Name of a module-managed set. arn OR ref, never both.
+  #           field_to_match:                #       (Required) Same field types as byte_match.
+  #             type: "URI_PATH"
+  #           text_transformations:
+  #             - priority: 0
+  #               type: "LOWERCASE"
+
+  # ── Custom inline rules (attached directly to the ACL) ──────────────────────
+  # custom_rules:                            # (Optional) Standalone rules attached to the ACL. Default: [].
+  #   - name: "block-bad-ips"                #   (Required) Rule name, unique across ALL ACL rules.
+  #     priority: 70                         #   (Required) Evaluation priority, unique across ALL ACL rules.
+  #     action: "block"                      #   (Required) Terminal action: allow | block | count | captcha | challenge.
+  #     captcha_config:                      #   (Optional) Per-rule CAPTCHA immunity time.
+  #       immunity_time: 300                 #     (Required) Seconds (60–259200).
+  #     challenge_config:                    #   (Optional) Per-rule challenge immunity time.
+  #       immunity_time: 300                 #     (Required) Seconds (300–259200).
+  #     rule_labels:                         #   (Optional) Labels added to matching requests, up to 5. Default: [].
+  #       - "custom:inline-match"
+  #     visibility_config:                   #   (Optional) Per-rule visibility config.
+  #       cloudwatch_metrics_enabled: true   #     (Optional) Default: true.
+  #       metric_name: "block-bad-ips"       #     (Optional) Default: the rule name.
+  #       sampled_requests_enabled: true     #     (Optional) Default: true.
+  #
+  #     # Statement types — set exactly ONE per rule.
+  #     ip_set_reference:                    #   (Optional) Match source IPs against an IP set.
+  #       arn: "arn:aws:wafv2:..."           #     (Option A) Literal ARN of an existing IP set.
+  #       ref: "blocked-ips"                 #     (Option B) Module-managed IP set name. arn OR ref, never both.
+  #       ip_set_forwarded_ip_config:        #     (Optional) Inspect a forwarded IP header instead of the source IP.
+  #         fallback_behavior: "NO_MATCH"    #       (Required) NO_MATCH | MATCH when the header is absent.
+  #         header_name: "X-Forwarded-For"   #       (Required) Header carrying the forwarded IP.
+  #         position: "FIRST"                #       (Required) FIRST | LAST | ANY.
+  #     geo_match:                           #   (Optional) Match requests by origin country.
+  #       country_codes: ["CN", "RU"]        #     (Required) ISO 3166-1 alpha-2 codes.
+  #       forwarded_ip_config:               #     (Optional) Resolve origin from a forwarded IP header.
+  #         fallback_behavior: "NO_MATCH"    #       (Required) NO_MATCH | MATCH.
+  #         header_name: "X-Forwarded-For"   #       (Required) Header carrying the forwarded IP.
+  #     label_match:                         #   (Optional) Match requests carrying a label set by an earlier rule.
+  #       scope: "LABEL"                     #     (Required) LABEL | NAMESPACE.
+  #       key: "awswaf:managed:aws:core-rule-set:NoUserAgent_Header"
+  #                                          #     (Required) Full label name, or namespace prefix when scope = NAMESPACE.
+  #     rate_based:                          #   (Optional) Match when a source exceeds a request rate.
+  #       limit: 2000                        #     (Required) Requests per window (100–2000000000).
+  #       aggregate_key_type: "IP"           #     (Optional) IP | FORWARDED_IP | CONSTANT | CUSTOM_KEYS. Default: IP.
+  #       evaluation_window_sec: 300         #     (Optional) 60 | 120 | 300 | 600. Default: 300.
+  #       forwarded_ip_config:               #     (Optional) Required when aggregate_key_type = FORWARDED_IP.
+  #         fallback_behavior: "NO_MATCH"    #       (Required) NO_MATCH | MATCH.
+  #         header_name: "X-Forwarded-For"   #       (Required) Header carrying the forwarded IP.
+  #     byte_match:                          #   (Optional) Match a literal string in a request field.
+  #       search_string: "badbot"            #     (Required) String to search for.
+  #       positional_constraint: "CONTAINS"  #     (Required) EXACTLY | STARTS_WITH | ENDS_WITH | CONTAINS | CONTAINS_WORD.
+  #       field_to_match:                    #     (Required) Request component to inspect.
+  #         type: "URI_PATH"                 #       (Required) URI_PATH | QUERY_STRING | METHOD | BODY |
+  #                                          #         ALL_QUERY_ARGUMENTS | SINGLE_HEADER | SINGLE_QUERY_ARGUMENT |
+  #                                          #         COOKIES | HEADERS | JSON_BODY.
+  #         name: null                       #       (Optional) Header/argument name — required for SINGLE_* types.
+  #         oversize_handling: "NO_MATCH"    #       (Optional) BODY / COOKIES / HEADERS / JSON_BODY: NO_MATCH | MATCH | CONTINUE.
+  #         match_type: null                 #       (Optional) COOKIES: ALL | INCLUDED_COOKIES | EXCLUDED_COOKIES.
+  #                                          #         HEADERS: ALL | INCLUDED_HEADERS | EXCLUDED_HEADERS.
+  #         match_strings: []                #       (Optional) COOKIES / HEADERS: cookie or header names to match.
+  #         match_scope: null                #       (Optional) JSON_BODY: ALL | KEY | VALUE.
+  #         invalid_fallback_behavior: null  #       (Optional) JSON_BODY: MATCH | NO_MATCH | EVALUATE_AS_STRING.
+  #       text_transformations:              #     (Optional) Applied before matching. Default: [].
+  #         - priority: 0                    #       (Required) Transformation order.
+  #           type: "LOWERCASE"              #       (Required) NONE | LOWERCASE | URL_DECODE | HTML_ENTITY_DECODE |
+  #                                          #         COMPRESS_WHITE_SPACE | CMD_LINE.
+  #     size_constraint:                     #   (Optional) Match on the size of a request field.
+  #       comparison_operator: "GT"          #     (Required) EQ | NE | LE | LT | GE | GT.
+  #       size: 8192                         #     (Required) Threshold in bytes.
+  #       field_to_match:                    #     (Required) Same field types as byte_match.
+  #         type: "BODY"
+  #         oversize_handling: "CONTINUE"
+  #       text_transformations:
+  #         - priority: 0
+  #           type: "NONE"
+  #     sqli_match:                          #   (Optional) Detect SQL injection in a request field.
+  #       sensitivity_level: "LOW"           #     (Optional) LOW | HIGH. Default: LOW.
+  #       field_to_match:                    #     (Required) Same field types as byte_match.
+  #         type: "QUERY_STRING"
+  #       text_transformations:
+  #         - priority: 0
+  #           type: "URL_DECODE"
+  #     xss_match:                           #   (Optional) Detect cross-site scripting in a request field.
+  #       field_to_match:                    #     (Required) Same field types as byte_match.
+  #         type: "BODY"
+  #         oversize_handling: "NO_MATCH"
+  #       text_transformations:
+  #         - priority: 0
+  #           type: "HTML_ENTITY_DECODE"
+  #     regex_match:                         #   (Optional) Match a field against a single inline regex.
+  #       regex_string: "^/admin/.*"         #     (Required) PCRE-compatible regular expression.
+  #       field_to_match:                    #     (Required) Same field types as byte_match.
+  #         type: "URI_PATH"
+  #       text_transformations:
+  #         - priority: 0
+  #           type: "LOWERCASE"
+  #     regex_pattern_set_reference:         #   (Optional) Match a field against a regex pattern set.
+  #       arn: "arn:aws:wafv2:..."           #     (Option A) Literal ARN of an existing regex pattern set.
+  #       ref: "malicious-paths"             #     (Option B) Module-managed set name. arn OR ref, never both.
+  #       field_to_match:                    #     (Required) Same field types as byte_match.
+  #         type: "URI_PATH"
+  #       text_transformations:
+  #         - priority: 0
+  #           type: "LOWERCASE"
+  #
+  #     # Compound statements — wrap leaf statements. Terraform does not support
+  #     # unlimited recursion: one extra level of not/and/or nesting is supported,
+  #     # and inner leaf statements are limited to the seven core field_to_match
+  #     # types (URI_PATH, QUERY_STRING, METHOD, BODY, ALL_QUERY_ARGUMENTS,
+  #     # SINGLE_HEADER, SINGLE_QUERY_ARGUMENT).
+  #     not_statement:                       #   (Optional) Matches when the inner statement does NOT match.
+  #       geo_match:                         #     (Optional) Any leaf statement, same schema as above.
+  #         country_codes: ["US", "CA"]
+  #     and_statement:                       #   (Optional) Matches when ALL inner statements match.
+  #       statements:                        #     (Required) At least 2 inner statements.
+  #         - ip_set_reference:
+  #             ref: "blocked-ips"
+  #         - byte_match:
+  #             search_string: "badbot"
+  #             positional_constraint: "CONTAINS"
+  #             field_to_match:
+  #               type: "URI_PATH"
+  #     or_statement:                        #   (Optional) Matches when ANY inner statement matches.
+  #       statements:                        #     (Required) At least 2 inner statements, same schema as and_statement.
+  #         - geo_match:
+  #             country_codes: ["KP", "IR"]
+  #         - label_match:
+  #             scope: "LABEL"
+  #             key: "awswaf:managed:aws:bot-control:bot:category:scraping"
+
+  # ── Logging ─────────────────────────────────────────────────────────────────
+  # logging:                                 # (Optional) WAF logging configuration. Default: {} (disabled).
+  #   enabled: true                          #   (Optional) Enable WAF logging. Default: false. When true the module
+  #                                          #     creates a CloudWatch log group named "aws-waf-logs-<acl-name>" and
+  #                                          #     adds it as the first log destination automatically.
+  #   retention_in_days: 90                  #   (Optional) Log group retention. Default: 90. Valid: 1, 3, 5, 7, 14, 30,
+  #                                          #     60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557,
+  #                                          #     2922, 3288, 3653, or 0 for never expire.
+  #   kms_key_id: null                       #   (Optional) KMS key ARN encrypting the log group. Default: null.
+  #   destination_arns:                      #   (Optional) Extra destinations beyond the auto-created log group. Default: [].
+  #     - "arn:aws:firehose:us-east-1:123456789012:deliverystream/aws-waf-logs-acme"
+  #                                          #     Kinesis Data Firehose (name must start with "aws-waf-logs-") or S3 bucket ARNs.
+  #   redacted_fields:                       #   (Optional) Fields omitted from stored log records. Default: [].
+  #     - type: "SINGLE_HEADER"              #     (Required) URI_PATH | QUERY_STRING | METHOD | SINGLE_HEADER.
+  #       name: "authorization"              #     (Optional) Header name — required only for SINGLE_HEADER.
+  #   filter:                                #   (Optional) Controls which requests reach the log destinations.
+  #     default_behavior: "DROP"             #     (Required) Behavior for requests matching no filter: KEEP | DROP.
+  #     filters:                             #     (Required) Ordered filter rules.
+  #       - behavior: "KEEP"                 #       (Required) Outcome for matching requests: KEEP | DROP.
+  #         requirement: "MEETS_ANY"         #       (Required) MEETS_ANY (OR) | MEETS_ALL (AND).
+  #         conditions:                      #       (Required) Match conditions.
+  #           - action_condition: "BLOCK"    #         (Optional) Match on the WAF action: ALLOW | BLOCK | COUNT.
+  #           - label_name_condition: "awswaf:managed:aws:core-rule-set:NoUserAgent_Header"
+  #                                          #         (Optional) Match on a label name or namespace prefix.
